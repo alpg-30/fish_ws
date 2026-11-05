@@ -1,17 +1,29 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.0.2)
 project(fish_interfaces)
 
-find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-find_package(std_msgs REQUIRED)
-
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/FlappingCommand.msg"
-  "msg/MotorTelemetry.msg"
-  "msg/GaitState.msg"
-  "msg/ExperimentState.msg"
-  DEPENDENCIES std_msgs
+find_package(catkin REQUIRED COMPONENTS
+  message_generation
+  std_msgs
 )
 
-ament_export_dependencies(rosidl_default_runtime)
-ament_package()
+add_message_files(
+  FILES
+  FlappingCommand.msg
+  MotorTelemetry.msg
+  GaitState.msg
+  ExperimentState.msg
+)
+
+add_service_files(
+  FILES
+  SetGait.srv
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
+
+catkin_package(
+  CATKIN_DEPENDS message_runtime std_msgs
+)

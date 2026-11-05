@@ -1,5 +1,8 @@
 build/
+devel/
 install/
+.catkin_tools/
+.catkin_workspace
 log/
 logs/
 bags/

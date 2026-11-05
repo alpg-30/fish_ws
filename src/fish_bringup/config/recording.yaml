@@ -1,12 +1,9 @@
-/fish/experiment_manager:
-  ros__parameters:
-    bag_root: bags
-    qos_override_file: ""
-    pre_roll_s: 0.5
-    tail_s: 0.5
-    recorder_start_timeout_s: 8.0
-    stop_timeout_s: 10.0
-    finalize_timeout_s: 15.0
-    min_free_disk_mb: 100
-    software_revision: task003-mock-first
-    fluent_reference: way_2.c:phase_from_time+bodong1
+bag_root: bags
+pre_roll_s: 0.5
+tail_s: 0.5
+recorder_start_timeout_s: 8.0
+stop_timeout_s: 10.0
+finalize_timeout_s: 15.0
+min_free_disk_mb: 100
+software_revision: task003-mock-first
+fluent_reference: way_2.c:phase_from_time+bodong1

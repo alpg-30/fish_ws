@@ -1,51 +1,57 @@
-/fish/controller:
-  ros__parameters:
-    backend: mock
-    timing.control_hz: 100.0
-    timing.telemetry_hz: 50.0
+backend: mock
+timing:
+  control_hz: 100.0
+  telemetry_hz: 50.0
 
-    motors.names: [fin_0, fin_1, fin_2, fin_3]
-    motors.ids: [1, 2, 3, 4]
+motors:
+  names: [fin_0, fin_1, fin_2, fin_3]
+  ids: [1, 2, 3, 4]
 
-    # fluent_asymmetric_delayed：快慢段切换点落在每个电机自己的波峰/波谷；
-    # fluent_asymmetric：Fluent UDF 原始全局相位（仅 x=0 点换向在极值）。
-    gait.waveform: fluent_asymmetric_delayed
-    gait.amplitude_model: 0.08
-    gait.frequency_hz: 1.0
-    # tf_coeff = 下扑（top→bottom）占周期比例，上抬占 1-tf_coeff。
-    # 0.65 表示下扑做功慢、上抬回位快；Fluent 原始默认 0.35 是下扑快、上抬慢，
-    # 对应 test_plot/output/data1_baseline.svg 的对照曲线。
-    gait.tf_coeff: 0.65
-    gait.body_coeff: 0.5
+# fluent_asymmetric_delayed：快慢段切换点落在每个电机自己的波峰/波谷；
+# fluent_asymmetric：Fluent UDF 原始全局相位（仅 x=0 点换向在极值）。
+gait:
+  waveform: fluent_asymmetric_delayed
+  amplitude_model: 0.08
+  frequency_hz: 1.0
+  # tf_coeff = 下扑（top→bottom）占周期比例，上抬占 1-tf_coeff。
+  # 0.65 表示下扑做功慢、上抬回位快；Fluent 原始默认 0.35 是下扑快、上抬慢。
+  tf_coeff: 0.65
+  body_coeff: 0.5
 
-    geometry.x_model: [0.0, 0.12, 0.24, 0.36]
-    geometry.z_model: [0.20, -0.20, 0.25, -0.25]
-    geometry.model_unit: fluent_model_unit
+geometry:
+  x_model: [0.0, 0.12, 0.24, 0.36]
+  z_model: [0.20, -0.20, 0.25, -0.25]
+  model_unit: fluent_model_unit
 
-    mapping.kind: mock_linear
-    mapping.gain_rad_per_model_unit: [1.0, 1.0, 1.0, 1.0]
-    mapping.offset_rad: [0.0, 0.0, 0.0, 0.0]
+mapping:
+  kind: mock_linear
+  gain_rad_per_model_unit: [1.0, 1.0, 1.0, 1.0]
+  offset_rad: [0.0, 0.0, 0.0, 0.0]
 
-    calibration.zero_raw: [2048, 2048, 2048, 2048]
-    calibration.direction: [1, 1, 1, 1]
-    calibration.external_ratio: [1.0, 1.0, 1.0, 1.0]
-    calibration.confirmed: false
+calibration:
+  zero_raw: [2048, 2048, 2048, 2048]
+  direction: [1, 1, 1, 1]
+  external_ratio: [1.0, 1.0, 1.0, 1.0]
+  confirmed: false
 
-    limits.min_rad: [-1.0, -1.0, -1.0, -1.0]
-    limits.max_rad: [1.0, 1.0, 1.0, 1.0]
-    limits.max_velocity_rad_s: [8.0, 8.0, 8.0, 8.0]
-    limits.max_acceleration_rad_s2: [30.0, 30.0, 30.0, 30.0]
-    limits.current_trip_a: [3.0, 3.0, 3.0, 3.0]
-    limits.current_trip_duration_s: 0.2
-    limits.temperature_trip_c: [80.0, 80.0, 80.0, 80.0]
-    limits.min_voltage_v: [10.0, 10.0, 10.0, 10.0]
-    limits.max_voltage_v: [14.0, 14.0, 14.0, 14.0]
+limits:
+  min_rad: [-1.0, -1.0, -1.0, -1.0]
+  max_rad: [1.0, 1.0, 1.0, 1.0]
+  max_velocity_rad_s: [8.0, 8.0, 8.0, 8.0]
+  max_acceleration_rad_s2: [30.0, 30.0, 30.0, 30.0]
+  current_trip_a: [3.0, 3.0, 3.0, 3.0]
+  current_trip_duration_s: 0.2
+  temperature_trip_c: [80.0, 80.0, 80.0, 80.0]
+  min_voltage_v: [10.0, 10.0, 10.0, 10.0]
+  max_voltage_v: [14.0, 14.0, 14.0, 14.0]
 
-    safety.feedback_timeout_s: 0.2
-    safety.bus_watchdog_ms: 100
-    safety.normal_stop_policy: hold_position
-    safety.require_recording: true
+safety:
+  feedback_timeout_s: 0.2
+  bus_watchdog_ms: 100
+  normal_stop_policy: hold_position
+  require_recording: true
 
-    bus.device: ""
-    bus.baudrate: 0
-    bus.protocol_version: 2.0
+bus:
+  device: ""
+  baudrate: 0
+  protocol_version: 2.0

@@ -1,0 +1,8 @@
+float64 amplitude_model
+float64 frequency_hz
+float64 tf_coeff
+float64 body_coeff
+---
+bool success
+string message
+uint64 accepted_config_revision

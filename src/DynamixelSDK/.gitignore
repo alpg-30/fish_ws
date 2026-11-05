@@ -5,6 +5,7 @@
 !LICENSE
 !SDK_REVISION
 !COLCON_IGNORE
+!CATKIN_IGNORE
 !c++/
 c++/*
 !c++/include/

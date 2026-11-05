@@ -2,25 +2,22 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
-#include <mutex>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
-#include <diagnostic_msgs/msg/diagnostic_array.hpp>
-#include <fish_interfaces/msg/experiment_state.hpp>
-#include <fish_interfaces/msg/flapping_command.hpp>
-#include <fish_interfaces/msg/gait_state.hpp>
-#include <fish_interfaces/msg/motor_telemetry.hpp>
-#include <rcl_interfaces/msg/set_parameters_result.hpp>
-#include <rclcpp/executors/single_threaded_executor.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/joint_state.hpp>
-#include <std_srvs/srv/trigger.hpp>
+#include <diagnostic_msgs/DiagnosticArray.h>
+#include <fish_interfaces/ExperimentState.h>
+#include <fish_interfaces/FlappingCommand.h>
+#include <fish_interfaces/GaitState.h>
+#include <fish_interfaces/MotorTelemetry.h>
+#include <fish_interfaces/SetGait.h>
+#include <ros/ros.h>
+#include <sensor_msgs/JointState.h>
+#include <std_srvs/Trigger.h>
 
 #include "fish_control/config.hpp"
 #include "fish_control/fluent_waveform.hpp"
@@ -29,7 +26,7 @@
 
 namespace fish_control {
 namespace {
-using Trigger = std_srvs::srv::Trigger;
+using Trigger = std_srvs::Trigger;
 constexpr double kRecorderTimeoutS = 1.0;
 constexpr double kBrakingTimeoutS = 5.0;
 
@@ -38,52 +35,29 @@ std::uint64_t steady_now_ns() {
     std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-bool assign_parameter(Config& c, const rclcpp::Parameter& p) {
-  const auto& n = p.get_name();
-  if (n == "backend") c.backend = p.as_string();
-  else if (n == "timing.control_hz") c.control_hz = p.as_double();
-  else if (n == "timing.telemetry_hz") c.telemetry_hz = p.as_double();
-  else if (n == "motors.names") c.motor_names = p.as_string_array();
-  else if (n == "motors.ids") c.motor_ids = p.as_integer_array();
-  else if (n == "gait.waveform") c.waveform = p.as_string();
-  else if (n == "gait.amplitude_model") c.amplitude_model = p.as_double();
-  else if (n == "gait.frequency_hz") c.frequency_hz = p.as_double();
-  else if (n == "gait.tf_coeff") c.tf_coeff = p.as_double();
-  else if (n == "gait.body_coeff") c.body_coeff = p.as_double();
-  else if (n == "geometry.x_model") c.x_model = p.as_double_array();
-  else if (n == "geometry.z_model") c.z_model = p.as_double_array();
-  else if (n == "geometry.model_unit") c.model_unit = p.as_string();
-  else if (n == "mapping.kind") c.mapping_kind = p.as_string();
-  else if (n == "mapping.gain_rad_per_model_unit") c.mapping_gain = p.as_double_array();
-  else if (n == "mapping.offset_rad") c.mapping_offset = p.as_double_array();
-  else if (n == "calibration.zero_raw") c.zero_raw = p.as_integer_array();
-  else if (n == "calibration.direction") c.direction = p.as_integer_array();
-  else if (n == "calibration.external_ratio") c.external_ratio = p.as_double_array();
-  else if (n == "calibration.confirmed") c.calibration_confirmed = p.as_bool();
-  else if (n == "limits.min_rad") c.min_rad = p.as_double_array();
-  else if (n == "limits.max_rad") c.max_rad = p.as_double_array();
-  else if (n == "limits.max_velocity_rad_s") c.max_velocity_rad_s = p.as_double_array();
-  else if (n == "limits.max_acceleration_rad_s2") c.max_acceleration_rad_s2 = p.as_double_array();
-  else if (n == "limits.current_trip_a") c.current_trip_a = p.as_double_array();
-  else if (n == "limits.current_trip_duration_s") c.current_trip_duration_s = p.as_double();
-  else if (n == "limits.temperature_trip_c") c.temperature_trip_c = p.as_double_array();
-  else if (n == "limits.min_voltage_v") c.min_voltage_v = p.as_double_array();
-  else if (n == "limits.max_voltage_v") c.max_voltage_v = p.as_double_array();
-  else if (n == "safety.feedback_timeout_s") c.feedback_timeout_s = p.as_double();
-  else if (n == "safety.bus_watchdog_ms") c.bus_watchdog_ms = p.as_int();
-  else if (n == "safety.normal_stop_policy") c.normal_stop_policy = p.as_string();
-  else if (n == "safety.require_recording") c.require_recording = p.as_bool();
-  else if (n == "bus.device") c.bus_device = p.as_string();
-  else if (n == "bus.baudrate") c.bus_baudrate = p.as_int();
-  else if (n == "bus.protocol_version") c.bus_protocol_version = p.as_double();
-  else return false;
+bool assign_vector(const ros::NodeHandle& pnh, const std::string& key,
+                   std::vector<double>& target) {
+  std::vector<double> values = target;
+  if (!pnh.getParam(key, values)) {
+    return false;
+  }
+  target = values;
   return true;
 }
 
-class ControllerNode final : public rclcpp::Node {
+bool assign_vector(const ros::NodeHandle& pnh, const std::string& key,
+                   std::vector<std::int64_t>& target) {
+  std::vector<int> values;
+  if (!pnh.getParam(key, values)) {
+    return false;
+  }
+  target.assign(values.begin(), values.end());
+  return true;
+}
+
+class ControllerNode {
 public:
-  ControllerNode() : Node("controller") {
-    declare_config_parameters();
+  ControllerNode() {
     accepted_config_ = read_config();
     const auto validation = validate_config(accepted_config_);
     if (!validation.valid) {
@@ -98,52 +72,36 @@ public:
       hold_position_[i] = applied_position_[i];
     }
 
-    const auto command_qos =
-      rclcpp::QoS(rclcpp::KeepLast(50)).reliable().durability_volatile();
-    const auto joint_qos =
-      rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
-    const auto latched_qos =
-      rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
-    const auto diagnostics_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-    command_pub_ = create_publisher<fish_interfaces::msg::FlappingCommand>(
-      "flapping_command", command_qos);
-    telemetry_pub_ = create_publisher<fish_interfaces::msg::MotorTelemetry>(
-      "motor_telemetry", command_qos);
-    joint_pub_ = create_publisher<sensor_msgs::msg::JointState>("joint_states", joint_qos);
-    gait_pub_ = create_publisher<fish_interfaces::msg::GaitState>("gait_state", latched_qos);
-    diagnostics_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
-      "diagnostics", diagnostics_qos);
-    experiment_sub_ = create_subscription<fish_interfaces::msg::ExperimentState>(
-      "experiment_state", latched_qos,
-      [this](fish_interfaces::msg::ExperimentState::SharedPtr message) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        last_experiment_ = std::move(*message);
-        last_experiment_ns_ = steady_now_ns();
-        have_experiment_ = true;
-      });
+    command_pub_ = nh_.advertise<fish_interfaces::FlappingCommand>("flapping_command", 50);
+    telemetry_pub_ = nh_.advertise<fish_interfaces::MotorTelemetry>("motor_telemetry", 50);
+    joint_pub_ = nh_.advertise<sensor_msgs::JointState>("joint_states", 10);
+    gait_pub_ = nh_.advertise<fish_interfaces::GaitState>("gait_state", 1, true);
+    diagnostics_pub_ =
+      nh_.advertise<diagnostic_msgs::DiagnosticArray>("diagnostics", 10);
+    experiment_sub_ = nh_.subscribe(
+      "experiment_state", 1, &ControllerNode::onExperimentState, this);
 
-    arm_service_ = make_request_service("arm", Request::ARM);
-    start_service_ = make_request_service("start", Request::START);
-    stop_service_ = make_request_service("stop_hold", Request::STOP_HOLD);
-    disarm_service_ = make_request_service("disarm", Request::DISARM);
-    estop_service_ = make_request_service("estop", Request::ESTOP);
-    reset_service_ = make_request_service("reset_fault", Request::RESET_FAULT);
+    arm_service_ = nh_.advertiseService("controller/arm", &ControllerNode::onArm, this);
+    start_service_ = nh_.advertiseService("controller/start", &ControllerNode::onStart, this);
+    stop_service_ =
+      nh_.advertiseService("controller/stop_hold", &ControllerNode::onStopHold, this);
+    disarm_service_ =
+      nh_.advertiseService("controller/disarm", &ControllerNode::onDisarm, this);
+    estop_service_ = nh_.advertiseService("controller/estop", &ControllerNode::onEstop, this);
+    reset_service_ =
+      nh_.advertiseService("controller/reset_fault", &ControllerNode::onResetFault, this);
+    set_gait_service_ =
+      nh_.advertiseService("controller/set_gait", &ControllerNode::onSetGait, this);
 
-    parameter_callback_handle_ = add_on_set_parameters_callback(
-      [this](const std::vector<rclcpp::Parameter>& parameters) {
-        return on_parameters(parameters);
-      });
-
-    const auto control_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::duration<double>(1.0 / accepted_config_.control_hz));
-    control_timer_ = create_wall_timer(control_period, [this]() { control_tick(); });
+    const auto control_period = ros::Duration(1.0 / accepted_config_.control_hz);
+    control_timer_ = nh_.createTimer(control_period, &ControllerNode::controlTick, this);
     last_control_ns_ = steady_now_ns();
     next_telemetry_ns_ = last_control_ns_;
     last_gait_publish_ns_ = 0;
-    RCLCPP_INFO(get_logger(), "controller initialized with backend=%s", bus_->backend().c_str());
+    ROS_INFO("controller initialized with backend=%s", bus_->backend().c_str());
   }
 
-  ~ControllerNode() override {
+  ~ControllerNode() {
     if (bus_) {
       bus_->close();
     }
@@ -152,148 +110,137 @@ public:
 private:
   enum class Request { NONE, ARM, START, STOP_HOLD, DISARM, ESTOP, RESET_FAULT };
 
-  rclcpp::Service<Trigger>::SharedPtr make_request_service(
-    const std::string& name, Request request) {
-    return create_service<Trigger>(
-      "controller/" + name,
-      [this, request](const Trigger::Request::SharedPtr, Trigger::Response::SharedPtr response) {
-        queue_request(request, response);
-      });
+  void onExperimentState(const fish_interfaces::ExperimentState::ConstPtr& message) {
+    last_experiment_ = *message;
+    last_experiment_ns_ = steady_now_ns();
+    have_experiment_ = true;
   }
 
-  void declare_config_parameters() {
-    const Config c;
-    declare_parameter<std::string>("backend", c.backend);
-    declare_parameter<double>("timing.control_hz", c.control_hz);
-    declare_parameter<double>("timing.telemetry_hz", c.telemetry_hz);
-    declare_parameter<std::vector<std::string>>("motors.names", c.motor_names);
-    declare_parameter<std::vector<std::int64_t>>("motors.ids", c.motor_ids);
-    declare_parameter<std::string>("gait.waveform", c.waveform);
-    declare_parameter<double>("gait.amplitude_model", c.amplitude_model);
-    declare_parameter<double>("gait.frequency_hz", c.frequency_hz);
-    declare_parameter<double>("gait.tf_coeff", c.tf_coeff);
-    declare_parameter<double>("gait.body_coeff", c.body_coeff);
-    declare_parameter<std::vector<double>>("geometry.x_model", c.x_model);
-    declare_parameter<std::vector<double>>("geometry.z_model", c.z_model);
-    declare_parameter<std::string>("geometry.model_unit", c.model_unit);
-    declare_parameter<std::string>("mapping.kind", c.mapping_kind);
-    declare_parameter<std::vector<double>>("mapping.gain_rad_per_model_unit", c.mapping_gain);
-    declare_parameter<std::vector<double>>("mapping.offset_rad", c.mapping_offset);
-    declare_parameter<std::vector<std::int64_t>>("calibration.zero_raw", c.zero_raw);
-    declare_parameter<std::vector<std::int64_t>>("calibration.direction", c.direction);
-    declare_parameter<std::vector<double>>("calibration.external_ratio", c.external_ratio);
-    declare_parameter<bool>("calibration.confirmed", c.calibration_confirmed);
-    declare_parameter<std::vector<double>>("limits.min_rad", c.min_rad);
-    declare_parameter<std::vector<double>>("limits.max_rad", c.max_rad);
-    declare_parameter<std::vector<double>>("limits.max_velocity_rad_s", c.max_velocity_rad_s);
-    declare_parameter<std::vector<double>>(
-      "limits.max_acceleration_rad_s2", c.max_acceleration_rad_s2);
-    declare_parameter<std::vector<double>>("limits.current_trip_a", c.current_trip_a);
-    declare_parameter<double>("limits.current_trip_duration_s", c.current_trip_duration_s);
-    declare_parameter<std::vector<double>>("limits.temperature_trip_c", c.temperature_trip_c);
-    declare_parameter<std::vector<double>>("limits.min_voltage_v", c.min_voltage_v);
-    declare_parameter<std::vector<double>>("limits.max_voltage_v", c.max_voltage_v);
-    declare_parameter<double>("safety.feedback_timeout_s", c.feedback_timeout_s);
-    declare_parameter<std::int64_t>("safety.bus_watchdog_ms", c.bus_watchdog_ms);
-    declare_parameter<std::string>("safety.normal_stop_policy", c.normal_stop_policy);
-    declare_parameter<bool>("safety.require_recording", c.require_recording);
-    declare_parameter<std::string>("bus.device", c.bus_device);
-    declare_parameter<std::int64_t>("bus.baudrate", c.bus_baudrate);
-    declare_parameter<double>("bus.protocol_version", c.bus_protocol_version);
+  bool onArm(Trigger::Request&, Trigger::Response& response) {
+    return queue_request(Request::ARM, response);
+  }
+  bool onStart(Trigger::Request&, Trigger::Response& response) {
+    return queue_request(Request::START, response);
+  }
+  bool onStopHold(Trigger::Request&, Trigger::Response& response) {
+    return queue_request(Request::STOP_HOLD, response);
+  }
+  bool onDisarm(Trigger::Request&, Trigger::Response& response) {
+    return queue_request(Request::DISARM, response);
+  }
+  bool onEstop(Trigger::Request&, Trigger::Response& response) {
+    return queue_request(Request::ESTOP, response);
+  }
+  bool onResetFault(Trigger::Request&, Trigger::Response& response) {
+    return queue_request(Request::RESET_FAULT, response);
   }
 
-  Config read_config() const {
-    Config c;
-    c.backend = get_parameter("backend").as_string();
-    c.control_hz = get_parameter("timing.control_hz").as_double();
-    c.telemetry_hz = get_parameter("timing.telemetry_hz").as_double();
-    c.motor_names = get_parameter("motors.names").as_string_array();
-    c.motor_ids = get_parameter("motors.ids").as_integer_array();
-    c.waveform = get_parameter("gait.waveform").as_string();
-    c.amplitude_model = get_parameter("gait.amplitude_model").as_double();
-    c.frequency_hz = get_parameter("gait.frequency_hz").as_double();
-    c.tf_coeff = get_parameter("gait.tf_coeff").as_double();
-    c.body_coeff = get_parameter("gait.body_coeff").as_double();
-    c.x_model = get_parameter("geometry.x_model").as_double_array();
-    c.z_model = get_parameter("geometry.z_model").as_double_array();
-    c.model_unit = get_parameter("geometry.model_unit").as_string();
-    c.mapping_kind = get_parameter("mapping.kind").as_string();
-    c.mapping_gain = get_parameter("mapping.gain_rad_per_model_unit").as_double_array();
-    c.mapping_offset = get_parameter("mapping.offset_rad").as_double_array();
-    c.zero_raw = get_parameter("calibration.zero_raw").as_integer_array();
-    c.direction = get_parameter("calibration.direction").as_integer_array();
-    c.external_ratio = get_parameter("calibration.external_ratio").as_double_array();
-    c.calibration_confirmed = get_parameter("calibration.confirmed").as_bool();
-    c.min_rad = get_parameter("limits.min_rad").as_double_array();
-    c.max_rad = get_parameter("limits.max_rad").as_double_array();
-    c.max_velocity_rad_s = get_parameter("limits.max_velocity_rad_s").as_double_array();
-    c.max_acceleration_rad_s2 = get_parameter("limits.max_acceleration_rad_s2").as_double_array();
-    c.current_trip_a = get_parameter("limits.current_trip_a").as_double_array();
-    c.current_trip_duration_s = get_parameter("limits.current_trip_duration_s").as_double();
-    c.temperature_trip_c = get_parameter("limits.temperature_trip_c").as_double_array();
-    c.min_voltage_v = get_parameter("limits.min_voltage_v").as_double_array();
-    c.max_voltage_v = get_parameter("limits.max_voltage_v").as_double_array();
-    c.feedback_timeout_s = get_parameter("safety.feedback_timeout_s").as_double();
-    c.bus_watchdog_ms = get_parameter("safety.bus_watchdog_ms").as_int();
-    c.normal_stop_policy = get_parameter("safety.normal_stop_policy").as_string();
-    c.require_recording = get_parameter("safety.require_recording").as_bool();
-    c.bus_device = get_parameter("bus.device").as_string();
-    c.bus_baudrate = get_parameter("bus.baudrate").as_int();
-    c.bus_protocol_version = get_parameter("bus.protocol_version").as_double();
-    return c;
-  }
-
-  rcl_interfaces::msg::SetParametersResult on_parameters(
-    const std::vector<rclcpp::Parameter>& parameters) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  bool onSetGait(fish_interfaces::SetGait::Request& request,
+                 fish_interfaces::SetGait::Response& response) {
     Config candidate = accepted_config_;
-    std::vector<std::string> changed;
-    changed.reserve(parameters.size());
-    for (const auto& parameter : parameters) {
-      if (!assign_parameter(candidate, parameter)) {
-        return parameter_rejected("unknown parameter: " + parameter.get_name());
-      }
-      changed.push_back(parameter.get_name());
-    }
+    candidate.amplitude_model = request.amplitude_model;
+    candidate.frequency_hz = request.frequency_hz;
+    candidate.tf_coeff = request.tf_coeff;
+    candidate.body_coeff = request.body_coeff;
+    const std::vector<std::string> changed = {
+      "gait.amplitude_model", "gait.frequency_hz", "gait.tf_coeff", "gait.body_coeff"};
     const auto validation =
       validate_config_update(accepted_config_, candidate, state_, changed);
     if (!validation.valid) {
-      return parameter_rejected(validation.error);
+      response.success = false;
+      response.message = validation.error;
+      response.accepted_config_revision = accepted_config_revision_;
+      ROS_WARN("set_gait rejected: %s", validation.error.c_str());
+      return true;
     }
     accepted_config_ = candidate;
     ++accepted_config_revision_;
     state_dirty_ = true;
     publish_gait_locked(steady_now_ns());
-    rcl_interfaces::msg::SetParametersResult result;
-    result.successful = true;
-    return result;
+    response.success = true;
+    response.message = "accepted";
+    response.accepted_config_revision = accepted_config_revision_;
+    return true;
   }
 
-  rcl_interfaces::msg::SetParametersResult parameter_rejected(const std::string& reason) {
-    RCLCPP_WARN(get_logger(), "parameter transaction rejected: %s", reason.c_str());
-    rcl_interfaces::msg::SetParametersResult result;
-    result.successful = false;
-    result.reason = reason;
-    return result;
+  Config read_config() const {
+    Config c;
+    ros::NodeHandle pnh("~");
+    pnh.param<std::string>("backend", c.backend, c.backend);
+    pnh.param<double>("timing/control_hz", c.control_hz, c.control_hz);
+    pnh.param<double>("timing/telemetry_hz", c.telemetry_hz, c.telemetry_hz);
+
+    std::vector<std::string> names = c.motor_names;
+    if (pnh.getParam("motors/names", names)) {
+      c.motor_names = names;
+    }
+    assign_vector(pnh, "motors/ids", c.motor_ids);
+
+    pnh.param<std::string>("gait/waveform", c.waveform, c.waveform);
+    pnh.param<double>("gait/amplitude_model", c.amplitude_model, c.amplitude_model);
+    pnh.param<double>("gait/frequency_hz", c.frequency_hz, c.frequency_hz);
+    pnh.param<double>("gait/tf_coeff", c.tf_coeff, c.tf_coeff);
+    pnh.param<double>("gait/body_coeff", c.body_coeff, c.body_coeff);
+
+    assign_vector(pnh, "geometry/x_model", c.x_model);
+    assign_vector(pnh, "geometry/z_model", c.z_model);
+    pnh.param<std::string>("geometry/model_unit", c.model_unit, c.model_unit);
+
+    pnh.param<std::string>("mapping/kind", c.mapping_kind, c.mapping_kind);
+    assign_vector(pnh, "mapping/gain_rad_per_model_unit", c.mapping_gain);
+    assign_vector(pnh, "mapping/offset_rad", c.mapping_offset);
+
+    assign_vector(pnh, "calibration/zero_raw", c.zero_raw);
+    assign_vector(pnh, "calibration/direction", c.direction);
+    assign_vector(pnh, "calibration/external_ratio", c.external_ratio);
+    pnh.param<bool>("calibration/confirmed", c.calibration_confirmed,
+                    c.calibration_confirmed);
+
+    assign_vector(pnh, "limits/min_rad", c.min_rad);
+    assign_vector(pnh, "limits/max_rad", c.max_rad);
+    assign_vector(pnh, "limits/max_velocity_rad_s", c.max_velocity_rad_s);
+    assign_vector(pnh, "limits/max_acceleration_rad_s2", c.max_acceleration_rad_s2);
+    assign_vector(pnh, "limits/current_trip_a", c.current_trip_a);
+    pnh.param<double>("limits/current_trip_duration_s", c.current_trip_duration_s,
+                      c.current_trip_duration_s);
+    assign_vector(pnh, "limits/temperature_trip_c", c.temperature_trip_c);
+    assign_vector(pnh, "limits/min_voltage_v", c.min_voltage_v);
+    assign_vector(pnh, "limits/max_voltage_v", c.max_voltage_v);
+
+    pnh.param<double>("safety/feedback_timeout_s", c.feedback_timeout_s,
+                      c.feedback_timeout_s);
+    int watchdog_ms = static_cast<int>(c.bus_watchdog_ms);
+    pnh.param<int>("safety/bus_watchdog_ms", watchdog_ms, watchdog_ms);
+    c.bus_watchdog_ms = watchdog_ms;
+    pnh.param<std::string>("safety/normal_stop_policy", c.normal_stop_policy,
+                           c.normal_stop_policy);
+    pnh.param<bool>("safety/require_recording", c.require_recording, c.require_recording);
+
+    pnh.param<std::string>("bus/device", c.bus_device, c.bus_device);
+    int baudrate = static_cast<int>(c.bus_baudrate);
+    pnh.param<int>("bus/baudrate", baudrate, baudrate);
+    c.bus_baudrate = baudrate;
+    pnh.param<double>("bus/protocol_version", c.bus_protocol_version,
+                      c.bus_protocol_version);
+    return c;
   }
 
-  void queue_request(Request request, Trigger::Response::SharedPtr response) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  bool queue_request(Request request, Trigger::Response& response) {
     if (request == Request::ESTOP) {
       if (state_ == ControllerState::ESTOP_LATCHED) {
-        response->success = true;
-        response->message = "already ESTOP_LATCHED";
-        return;
+        response.success = true;
+        response.message = "already ESTOP_LATCHED";
+        return true;
       }
       pending_request_ = request;
-      response->success = true;
-      response->message = "estop queued";
-      return;
+      response.success = true;
+      response.message = "estop queued";
+      return true;
     }
     if (pending_request_ != Request::NONE) {
-      response->success = false;
-      response->message = "another controller request is pending";
-      return;
+      response.success = false;
+      response.message = "another controller request is pending";
+      return true;
     }
     bool allowed = false;
     std::string message;
@@ -303,28 +250,28 @@ private:
         message = allowed ? "arm queued" : "arm requires DISARMED and valid mapping";
         break;
       case Request::START: {
-        response->success = start_locked(steady_now_ns());
-        response->message = response->success ? "RUNNING" :
+        response.success = start_locked(steady_now_ns());
+        response.message = response.success ? "RUNNING" :
           "start requires HOLDING, fresh recorder_ready session, positive frequency and valid mapping";
-        if (response->success) {
+        if (response.success) {
           publish_gait_locked(steady_now_ns());
         }
-        return;
+        return true;
       }
       case Request::STOP_HOLD:
         if (state_ == ControllerState::HOLDING || state_ == ControllerState::BRAKING) {
-          response->success = true;
-          response->message = to_string(state_);
-          return;
+          response.success = true;
+          response.message = to_string(state_);
+          return true;
         }
         allowed = state_ == ControllerState::RUNNING;
         message = allowed ? "stop_hold queued" : "stop_hold requires RUNNING";
         break;
       case Request::DISARM:
         if (state_ == ControllerState::DISARMED) {
-          response->success = true;
-          response->message = "already DISARMED";
-          return;
+          response.success = true;
+          response.message = "already DISARMED";
+          return true;
         }
         allowed = state_ == ControllerState::HOLDING;
         message = allowed ? "disarm queued" : "disarm requires HOLDING";
@@ -341,8 +288,9 @@ private:
     if (allowed) {
       pending_request_ = request;
     }
-    response->success = allowed;
-    response->message = message;
+    response.success = allowed;
+    response.message = message;
+    return true;
   }
 
   bool recorder_valid_locked(std::uint64_t now_ns, const std::string& expected_run_id) const {
@@ -360,8 +308,7 @@ private:
     return age >= 0.0 && age <= kRecorderTimeoutS;
   }
 
-  void control_tick() {
-    std::lock_guard<std::mutex> lock(mutex_);
+  void controlTick(const ros::TimerEvent&) {
     const std::uint64_t now_ns = steady_now_ns();
     const double dt = std::clamp(
       static_cast<double>(now_ns - last_control_ns_) * 1e-9, 1e-6, 0.1);
@@ -386,7 +333,7 @@ private:
       if (state_ == ControllerState::RUNNING &&
           !recorder_valid_locked(now_ns, active_run_id_)) {
         last_warning_ = "recorder session invalid; bounded stop requested";
-        RCLCPP_WARN(get_logger(), "%s", last_warning_.c_str());
+        ROS_WARN("%s", last_warning_.c_str());
         begin_brake_locked();
       }
       if (torque_expected_locked()) {
@@ -670,7 +617,7 @@ private:
     active_run_id_.clear();
     applied_velocity_.fill(0.0);
     bus_->set_torque(false);
-    RCLCPP_ERROR(get_logger(), "FAULT latched: %s", code.c_str());
+    ROS_ERROR("FAULT latched: %s", code.c_str());
     set_state_locked(ControllerState::FAULT);
   }
 
@@ -680,7 +627,7 @@ private:
     active_run_id_.clear();
     applied_velocity_.fill(0.0);
     bus_->set_torque(false);
-    RCLCPP_ERROR(get_logger(), "software ESTOP latched");
+    ROS_ERROR("software ESTOP latched");
     set_state_locked(ControllerState::ESTOP_LATCHED);
   }
 
@@ -692,14 +639,15 @@ private:
   }
 
   void publish_command_locked(std::uint64_t now_ns) {
-    fish_interfaces::msg::FlappingCommand msg;
-    msg.header.stamp = this->now();
+    fish_interfaces::FlappingCommand msg;
+    msg.header.stamp = ros::Time::now();
     msg.header.frame_id = "fish";
     msg.sequence = ++command_sequence_;
     msg.host_steady_time_ns = now_ns;
     msg.backend = accepted_config_.backend;
     msg.active_config_revision = active_config_revision_;
-    const Config& waveform_config = active_config_revision_ == 0 ? accepted_config_ : active_config_;
+    const Config& waveform_config =
+      active_config_revision_ == 0 ? accepted_config_ : active_config_;
     msg.cycle_time_s = waveform_config.frequency_hz > 0.0 ?
       1.0 / waveform_config.frequency_hz : std::numeric_limits<double>::quiet_NaN();
     msg.phase_rad = last_sample_.phase_rad;
@@ -723,20 +671,20 @@ private:
       msg.safety_modified[i] = last_sample_.mapping_valid &&
         std::abs(last_sample_.ideal_joint_target_rad[i] - applied_position_[i]) > 1e-12;
     }
-    command_pub_->publish(msg);
+    command_pub_.publish(msg);
   }
 
   void publish_telemetry_locked() {
     const auto& state = last_motor_state_;
-    fish_interfaces::msg::MotorTelemetry msg;
-    msg.header.stamp = this->now();
+    fish_interfaces::MotorTelemetry msg;
+    msg.header.stamp = ros::Time::now();
     msg.header.frame_id = "fish";
     msg.sequence = ++telemetry_sequence_;
     msg.host_steady_time_ns = state.host_steady_time_ns;
     msg.backend = bus_->backend();
     msg.active_config_revision = active_config_revision_;
     msg.acquisition_duration_s = state.acquisition_duration_s;
-    sensor_msgs::msg::JointState joint;
+    sensor_msgs::JointState joint;
     joint.header = msg.header;
     joint.name.resize(kMotorCount);
     joint.position.resize(kMotorCount);
@@ -768,13 +716,13 @@ private:
       joint.position[i] = msg.position_rad[i];
       joint.velocity[i] = msg.velocity_rad_s[i];
     }
-    telemetry_pub_->publish(msg);
-    joint_pub_->publish(joint);
+    telemetry_pub_.publish(msg);
+    joint_pub_.publish(joint);
   }
 
   void publish_gait_locked(std::uint64_t now_ns) {
-    fish_interfaces::msg::GaitState msg;
-    msg.header.stamp = this->now();
+    fish_interfaces::GaitState msg;
+    msg.header.stamp = ros::Time::now();
     msg.header.frame_id = "fish";
     msg.backend = accepted_config_.backend;
     msg.controller_state = to_string(state_);
@@ -796,46 +744,49 @@ private:
       msg.z_model[i] = accepted_config_.z_model[i];
       msg.hold_position_rad[i] = hold_position_[i];
     }
-    gait_pub_->publish(msg);
+    gait_pub_.publish(msg);
     last_gait_publish_ns_ = now_ns;
     state_dirty_ = false;
   }
 
   void publish_diagnostics_locked() {
-    diagnostic_msgs::msg::DiagnosticArray array;
-    array.header.stamp = this->now();
-    diagnostic_msgs::msg::DiagnosticStatus status;
+    diagnostic_msgs::DiagnosticArray array;
+    array.header.stamp = ros::Time::now();
+    diagnostic_msgs::DiagnosticStatus status;
     status.name = "fish/controller";
     status.hardware_id = bus_->backend();
-    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.level = diagnostic_msgs::DiagnosticStatus::OK;
     if (state_ == ControllerState::FAULT || state_ == ControllerState::ESTOP_LATCHED) {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      status.level = diagnostic_msgs::DiagnosticStatus::ERROR;
     } else if (!last_warning_.empty()) {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      status.level = diagnostic_msgs::DiagnosticStatus::WARN;
     }
     status.message = fault_code_.empty() ? to_string(state_) : fault_code_;
     add_diagnostic(status, "controller_state", to_string(state_));
     add_diagnostic(status, "backend", bus_->backend());
-    add_diagnostic(status, "accepted_config_revision", std::to_string(accepted_config_revision_));
-    add_diagnostic(status, "active_config_revision", std::to_string(active_config_revision_));
-    add_diagnostic(status, "feedback_fresh", feedback_fresh_locked(steady_now_ns()) ? "true" : "false");
+    add_diagnostic(status, "accepted_config_revision",
+                   std::to_string(accepted_config_revision_));
+    add_diagnostic(status, "active_config_revision",
+                   std::to_string(active_config_revision_));
+    add_diagnostic(status, "feedback_fresh",
+                   feedback_fresh_locked(steady_now_ns()) ? "true" : "false");
     add_diagnostic(status, "recorder_valid",
       recorder_valid_locked(steady_now_ns(), active_run_id_) ? "true" : "false");
     add_diagnostic(status, "warning", last_warning_);
     array.status.push_back(status);
-    diagnostics_pub_->publish(array);
+    diagnostics_pub_.publish(array);
   }
 
   static void add_diagnostic(
-    diagnostic_msgs::msg::DiagnosticStatus& status,
+    diagnostic_msgs::DiagnosticStatus& status,
     const std::string& key, const std::string& value) {
-    diagnostic_msgs::msg::KeyValue item;
+    diagnostic_msgs::KeyValue item;
     item.key = key;
     item.value = value;
     status.values.push_back(item);
   }
 
-  std::mutex mutex_;
+  ros::NodeHandle nh_;
   Config accepted_config_;
   Config active_config_;
   std::uint64_t accepted_config_revision_{1};
@@ -862,7 +813,7 @@ private:
   bool have_feedback_{false};
   std::uint64_t last_successful_write_ns_{0};
   BusResult last_goal_write_;
-  fish_interfaces::msg::ExperimentState last_experiment_;
+  fish_interfaces::ExperimentState last_experiment_;
   bool have_experiment_{false};
   std::uint64_t last_experiment_ns_{0};
 
@@ -872,37 +823,33 @@ private:
   std::uint64_t next_telemetry_ns_{0};
   std::uint64_t last_gait_publish_ns_{0};
 
-  rclcpp::Publisher<fish_interfaces::msg::FlappingCommand>::SharedPtr command_pub_;
-  rclcpp::Publisher<fish_interfaces::msg::MotorTelemetry>::SharedPtr telemetry_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_pub_;
-  rclcpp::Publisher<fish_interfaces::msg::GaitState>::SharedPtr gait_pub_;
-  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
-  rclcpp::Subscription<fish_interfaces::msg::ExperimentState>::SharedPtr experiment_sub_;
-  rclcpp::Service<Trigger>::SharedPtr arm_service_;
-  rclcpp::Service<Trigger>::SharedPtr start_service_;
-  rclcpp::Service<Trigger>::SharedPtr stop_service_;
-  rclcpp::Service<Trigger>::SharedPtr disarm_service_;
-  rclcpp::Service<Trigger>::SharedPtr estop_service_;
-  rclcpp::Service<Trigger>::SharedPtr reset_service_;
-  rclcpp::TimerBase::SharedPtr control_timer_;
-  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
+  ros::Publisher command_pub_;
+  ros::Publisher telemetry_pub_;
+  ros::Publisher joint_pub_;
+  ros::Publisher gait_pub_;
+  ros::Publisher diagnostics_pub_;
+  ros::Subscriber experiment_sub_;
+  ros::ServiceServer arm_service_;
+  ros::ServiceServer start_service_;
+  ros::ServiceServer stop_service_;
+  ros::ServiceServer disarm_service_;
+  ros::ServiceServer estop_service_;
+  ros::ServiceServer reset_service_;
+  ros::ServiceServer set_gait_service_;
+  ros::Timer control_timer_;
 };
 
 }  // namespace
 }  // namespace fish_control
 
 int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
+  ros::init(argc, argv, "controller");
   try {
-    auto node = std::make_shared<fish_control::ControllerNode>();
-    rclcpp::executors::SingleThreadedExecutor executor;
-    executor.add_node(node);
-    executor.spin();
+    fish_control::ControllerNode node;
+    ros::spin();
   } catch (const std::exception& error) {
-    RCLCPP_FATAL(rclcpp::get_logger("controller"), "startup failed: %s", error.what());
-    rclcpp::shutdown();
+    ROS_FATAL("controller startup failed: %s", error.what());
     return 1;
   }
-  rclcpp::shutdown();
   return 0;
 }

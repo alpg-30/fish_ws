@@ -1,4 +1,4 @@
-"""TTY-only single-key console; pure key decisions remain ROS-independent."""
+"""TTY-only single-key console for ROS 1; pure key decisions stay ROS-free."""
 
 import os
 import select
@@ -45,29 +45,20 @@ def stop_wait_complete(state, transition_in_progress):
 
 class KeyboardNode:
     def __init__(self):
-        import rclpy
+        import rospy
         from fish_interfaces.msg import ExperimentState
-        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from std_srvs.srv import SetBool, Trigger
 
-        self._rclpy = rclpy
+        self._rospy = rospy
         self._set_bool_type = SetBool
         self._trigger_type = Trigger
-        self.node = rclpy.create_node("keyboard_console", namespace="fish")
         self.latest = None
         self._last_printed = None
-        qos = QoSProfile(
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        self.subscription = self.node.create_subscription(
-            ExperimentState, "/fish/experiment_state", self._on_state, qos
-        )
-        self.set_running_client = self.node.create_client(
-            SetBool, "/fish/experiment/set_running"
-        )
-        self.estop_client = self.node.create_client(Trigger, "/fish/controller/estop")
+        self.subscription = rospy.Subscriber(
+            "/fish/experiment_state", ExperimentState, self._on_state, queue_size=1)
+        self.set_running_client = rospy.ServiceProxy(
+            "/fish/experiment/set_running", SetBool)
+        self.estop_client = rospy.ServiceProxy("/fish/controller/estop", Trigger)
 
     def _on_state(self, message):
         self.latest = message
@@ -94,33 +85,33 @@ class KeyboardNode:
     def spin_for_initial_state(self, timeout_s=3.0):
         deadline = time.monotonic() + timeout_s
         while self.latest is None and time.monotonic() < deadline:
-            self._rclpy.spin_once(self.node, timeout_sec=0.1)
+            time.sleep(0.05)
         return self.latest is not None
 
-    def _call(self, client, request, timeout_s):
-        if not client.wait_for_service(timeout_sec=1.0):
-            print("service unavailable: {0}".format(client.srv_name), flush=True)
+    def _call(self, client, request, timeout_s, label):
+        try:
+            if not client.wait_for_service(timeout=min(1.0, timeout_s)):
+                print("service unavailable: {0}".format(label), flush=True)
+                return None
+            return client(request)
+        except self._rospy.ServiceException as exc:
+            print("service call failed: {0}".format(exc), flush=True)
             return None
-        future = client.call_async(request)
-        deadline = time.monotonic() + timeout_s
-        while not future.done() and time.monotonic() < deadline:
-            self._rclpy.spin_once(self.node, timeout_sec=0.1)
-        if not future.done():
-            future.cancel()
-            print("service timeout: {0}".format(client.srv_name), flush=True)
-            return None
-        return future.result()
 
     def request_running(self, target):
         request = self._set_bool_type.Request()
         request.data = target
-        response = self._call(self.set_running_client, request, 5.0)
+        response = self._call(
+            self.set_running_client, request, 5.0, "/fish/experiment/set_running")
         if response is not None:
-            print("set_running({0}): {1} {2}".format(target, response.success, response.message), flush=True)
+            print("set_running({0}): {1} {2}".format(
+                target, response.success, response.message), flush=True)
         return response
 
     def request_estop(self):
-        response = self._call(self.estop_client, self._trigger_type.Request(), 3.0)
+        response = self._call(
+            self.estop_client, self._trigger_type.Request(), 3.0,
+            "/fish/controller/estop")
         if response is not None:
             print("estop: {0} {1}".format(response.success, response.message), flush=True)
         return response
@@ -133,7 +124,7 @@ class KeyboardNode:
             return False
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            self._rclpy.spin_once(self.node, timeout_sec=0.1)
+            time.sleep(0.05)
             if self.latest is not None and stop_wait_complete(
                 self.latest.state, self.latest.transition_in_progress
             ):
@@ -142,7 +133,10 @@ class KeyboardNode:
         return False
 
     def close(self):
-        self.node.destroy_node()
+        try:
+            self.subscription.unregister()
+        except Exception:
+            pass
 
 
 def run_console():
@@ -150,16 +144,14 @@ def run_console():
         print("keyboard_console requires an interactive TTY", file=sys.stderr)
         return 2
 
-    import rclpy
+    import rospy
 
     fd = sys.stdin.fileno()
     original = termios.tcgetattr(fd)
     keyboard = None
-    ros_initialized = False
     exit_code = 0
     try:
-        rclpy.init()
-        ros_initialized = True
+        rospy.init_node("keyboard_console")
         keyboard = KeyboardNode()
         tty.setcbreak(fd)
         print("space=start/stop  e=estop  q=quit (short presses only)", flush=True)
@@ -169,7 +161,6 @@ def run_console():
         last_busy_notice = 0.0
         while not quitting:
             ready, _, _ = select.select([fd], [], [], 0.05)
-            rclpy.spin_once(keyboard.node, timeout_sec=0.0)
             if not ready:
                 continue
             data = os.read(fd, 32)
@@ -191,12 +182,12 @@ def run_console():
                     print("waiting for ExperimentState; key ignored", flush=True)
                     continue
                 target = gate.accept(
-                    state.state, state.transition_in_progress, time.monotonic()
-                )
+                    state.state, state.transition_in_progress, time.monotonic())
                 if target is None:
                     now = time.monotonic()
                     if now - last_busy_notice >= 0.5:
-                        print("key ignored (busy, debounce, or non-startable state)", flush=True)
+                        print("key ignored (busy, debounce, or non-startable state)",
+                              flush=True)
                         last_busy_notice = now
                     continue
                 keyboard.request_running(target)
@@ -209,8 +200,10 @@ def run_console():
         termios.tcsetattr(fd, termios.TCSADRAIN, original)
         if keyboard is not None:
             keyboard.close()
-        if ros_initialized and rclpy.ok():
-            rclpy.shutdown()
+        try:
+            rospy.signal_shutdown("keyboard console exit")
+        except Exception:
+            pass
     return exit_code
 
 

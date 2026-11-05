@@ -1,5 +1,3 @@
-"""Serial experiment coordinator with record-before-motion and hold-before-close."""
-
 import json
 import os
 import queue
@@ -12,27 +10,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .bag_audit import REQUIRED_TOPICS
+from .bag_audit import REQUIRED_TOPICS, required_topic_entries
 
 
 STATES = {"IDLE", "STARTING", "RUNNING", "STOPPING", "HOLDING", "ERROR"}
 FAULT_STATES = {"FAULT", "ESTOP_LATCHED"}
-QOS_CONTRACT = {
-    "/fish/flapping_command": "reliable/volatile/depth50",
-    "/fish/motor_telemetry": "reliable/volatile/depth50",
-    "/fish/joint_states": "reliable/volatile/depth10",
-    "/fish/gait_state": "reliable/transient_local/depth1",
-    "/fish/experiment_state": "reliable/transient_local/depth1",
-    "/fish/diagnostics": "reliable/volatile/depth10",
-    "/parameter_events": "reliable/volatile/depth1000",
-}
-
-
-def required_topic_entries():
-    return [
-        {"name": name, "type": type_name, "qos_profile": QOS_CONTRACT[name]}
-        for name, type_name in REQUIRED_TOPICS.items()
-    ]
 
 
 def decide_set_running(state, transition_in_progress, target):
@@ -67,17 +49,11 @@ def make_run_id(now=None):
     return now.strftime("%Y%m%dT%H%M%S.%fZ") + "-" + uuid.uuid4().hex[:10]
 
 
-def make_recorder_argv(qos_override_file, bag_path, ros2_executable="ros2"):
+def make_recorder_argv(bag_path):
     return [
-        ros2_executable,
-        "bag",
+        "rosbag",
         "record",
-        "-s",
-        "sqlite3",
-        "--disable-keyboard-controls",
-        "--qos-profile-overrides-path",
-        str(qos_override_file),
-        "-o",
+        "-O",
         str(bag_path),
         *REQUIRED_TOPICS.keys(),
     ]
@@ -104,8 +80,7 @@ def new_session(run_id, backend, parameters, bag_relative_path, started_ros_time
         "schema_version": 1,
         "run_id": run_id,
         "backend": backend,
-        "storage_id": "sqlite3",
-        "ros_distro": os.environ.get("ROS_DISTRO", "jazzy"),
+        "ros_distro": "noetic",
         "software_revision": parameters["software_revision"],
         "fluent_reference_revision_or_digest": parameters["fluent_reference"],
         "started_ros_time_ns": int(started_ros_time_ns),
@@ -131,13 +106,12 @@ def new_session(run_id, backend, parameters, bag_relative_path, started_ros_time
 
 class ExperimentManager:
     def __init__(self):
-        import rclpy
-        from fish_interfaces.msg import ExperimentState, FlappingCommand, GaitState, MotorTelemetry
-        from rcl_interfaces.srv import GetParameters, ListParameters
-        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        import rospy
+        from fish_interfaces.msg import (
+            ExperimentState, FlappingCommand, GaitState, MotorTelemetry)
         from std_srvs.srv import SetBool, Trigger
 
-        self._rclpy = rclpy
+        self._rospy = rospy
         self._messages = {
             "experiment": ExperimentState,
             "gait": GaitState,
@@ -145,10 +119,8 @@ class ExperimentManager:
             "telemetry": MotorTelemetry,
         }
         self._trigger_type = Trigger
-        self._get_parameters_type = GetParameters
-        self._list_parameters_type = ListParameters
-        self.node = rclpy.create_node("experiment_manager", namespace="fish")
-        self.parameters = self._declare_parameters()
+        self._set_bool_type = SetBool
+        self.parameters = self._load_parameters()
         self._lock = threading.RLock()
         self._queue = queue.Queue(maxsize=8)
         self._stop_event = threading.Event()
@@ -172,46 +144,31 @@ class ExperimentManager:
             "last_error": "",
         }
 
-        latched = QoSProfile(
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        stream = QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE)
-        self.publisher = self.node.create_publisher(
-            ExperimentState, "/fish/experiment_state", latched
-        )
+        self.publisher = rospy.Publisher(
+            "/fish/experiment_state", ExperimentState, queue_size=1, latch=True)
         self.subscriptions = [
-            self.node.create_subscription(GaitState, "/fish/gait_state", self._on_gait, latched),
-            self.node.create_subscription(
-                FlappingCommand, "/fish/flapping_command", self._on_command, stream
-            ),
-            self.node.create_subscription(
-                MotorTelemetry, "/fish/motor_telemetry", self._on_telemetry, stream
-            ),
+            rospy.Subscriber("/fish/gait_state", GaitState, self._on_gait, queue_size=1),
+            rospy.Subscriber(
+                "/fish/flapping_command", FlappingCommand, self._on_command, queue_size=50),
+            rospy.Subscriber(
+                "/fish/motor_telemetry", MotorTelemetry, self._on_telemetry, queue_size=50),
         ]
-        self.service = self.node.create_service(
-            SetBool, "/fish/experiment/set_running", self._on_set_running
-        )
+        self.service = rospy.Service(
+            "/fish/experiment/set_running", SetBool, self._on_set_running)
+        self.trigger_names = ("arm", "start", "stop_hold", "estop")
         self.trigger_clients = {
-            name: self.node.create_client(Trigger, "/fish/controller/" + name)
-            for name in ("arm", "start", "stop_hold", "estop")
+            name: rospy.ServiceProxy("/fish/controller/" + name, Trigger)
+            for name in self.trigger_names
         }
-        self.list_parameters_client = self.node.create_client(
-            ListParameters, "/fish/controller/list_parameters"
-        )
-        self.get_parameters_client = self.node.create_client(
-            GetParameters, "/fish/controller/get_parameters"
-        )
-        self.timer = self.node.create_timer(0.5, self._heartbeat)
+        self.timer = rospy.Timer(rospy.Duration(0.5), self._heartbeat)
         self._publish_state()
-        self.worker = threading.Thread(target=self._worker_loop, name="experiment-worker", daemon=True)
+        self.worker = threading.Thread(
+            target=self._worker_loop, name="experiment-worker", daemon=True)
         self.worker.start()
 
-    def _declare_parameters(self):
+    def _load_parameters(self):
         defaults = {
             "bag_root": "bags",
-            "qos_override_file": "",
             "pre_roll_s": 0.5,
             "tail_s": 0.5,
             "recorder_start_timeout_s": 8.0,
@@ -221,10 +178,12 @@ class ExperimentManager:
             "software_revision": "task003-mock-first",
             "fluent_reference": "way_2.c:phase_from_time+bodong1",
         }
-        for name, value in defaults.items():
-            self.node.declare_parameter(name, value)
-        values = {name: self.node.get_parameter(name).value for name in defaults}
-        for name in ("pre_roll_s", "tail_s", "recorder_start_timeout_s", "stop_timeout_s", "finalize_timeout_s"):
+        values = {
+            name: self._rospy.get_param("~" + name, value)
+            for name, value in defaults.items()
+        }
+        for name in ("pre_roll_s", "tail_s", "recorder_start_timeout_s",
+                     "stop_timeout_s", "finalize_timeout_s"):
             if float(values[name]) <= 0.0:
                 raise ValueError("{0} must be positive".format(name))
         if int(values["min_free_disk_mb"]) < 0:
@@ -232,7 +191,10 @@ class ExperimentManager:
         return values
 
     def _now_ns(self):
-        return self.node.get_clock().now().nanoseconds
+        try:
+            return self._rospy.Time.now().to_nsec()
+        except Exception:
+            return int(time.time() * 1e9)
 
     def _on_gait(self, message):
         with self._lock:
@@ -269,19 +231,26 @@ class ExperimentManager:
         with self._lock:
             values = dict(self._state)
             gait = self._latest["gait"]
-            message = self._messages["experiment"]()
-            message.header.stamp = self.node.get_clock().now().to_msg()
-            message.run_id = values["run_id"]
-            message.state = values["state"]
-            message.transition_in_progress = values["transition_in_progress"]
-            message.recorder_ready = values["recorder_ready"]
-            message.controller_state = gait.controller_state if gait is not None else "UNKNOWN"
-            message.bag_relative_path = values["bag_relative_path"]
-            message.last_error = values["last_error"]
+        message = self._messages["experiment"]()
+        try:
+            message.header.stamp = self._rospy.Time.now()
+        except Exception:
+            message.header.stamp = self._rospy.Time.from_sec(time.time())
+        message.run_id = values["run_id"]
+        message.state = values["state"]
+        message.transition_in_progress = values["transition_in_progress"]
+        message.recorder_ready = values["recorder_ready"]
+        message.controller_state = gait.controller_state if gait is not None else "UNKNOWN"
+        message.bag_relative_path = values["bag_relative_path"]
+        message.last_error = values["last_error"]
+        try:
             self.publisher.publish(message)
+        except Exception as exc:
+            self._rospy.logwarn("experiment_state publish failed: {0}".format(exc))
 
-    def _on_set_running(self, request, response):
+    def _on_set_running(self, request):
         target = bool(request.data)
+        response = self._set_bool_type.Response()
         with self._lock:
             if not self._accepting:
                 response.success = False
@@ -326,14 +295,15 @@ class ExperimentManager:
                         self._stop_active(forced_error=detail or "manager shutdown")
                     self._shutdown_done.set()
             except Exception as exc:
-                self.node.get_logger().error("experiment operation failed: {0}".format(exc))
+                self._rospy.logerr("experiment operation failed: {0}".format(exc))
                 try:
                     if self._active:
                         self._stop_active(forced_error=str(exc))
                     else:
                         self._set_state("ERROR", False, False, str(exc))
                 except Exception as cleanup_exc:
-                    self.node.get_logger().error("experiment cleanup failed: {0}".format(cleanup_exc))
+                    self._rospy.logerr(
+                        "experiment cleanup failed: {0}".format(cleanup_exc))
                     self._set_state("ERROR", False, False, str(cleanup_exc))
             finally:
                 if operation in {"start", "stop", "abort"}:
@@ -350,19 +320,31 @@ class ExperimentManager:
     def _relative_bag_path(self, bag_path):
         return Path(os.path.relpath(str(bag_path), str(Path.cwd()))).as_posix()
 
+    def _subscriber_counts(self):
+        try:
+            state = self._rospy.get_master().getSystemState()
+            return {topic: len(nodes) for topic, nodes in state[1]}
+        except Exception as exc:
+            self._rospy.logwarn_throttle(5.0, "cannot query subscriber counts: {0}".format(exc))
+            return {}
+
+    def _check_topic_types(self):
+        published = dict(self._rospy.get_published_topics() or [])
+        for name, type_name in REQUIRED_TOPICS.items():
+            if published.get(name) != type_name:
+                raise RuntimeError("missing publisher/type on " + name)
+
     def _preflight(self):
         gait, received = self._latest_gait()
         if gait is None or time.monotonic() - received > 2.0:
             raise RuntimeError("fresh GaitState unavailable")
         if gait.controller_state not in {"DISARMED", "HOLDING"}:
-            raise RuntimeError("controller must be DISARMED or HOLDING, got " + gait.controller_state)
+            raise RuntimeError(
+                "controller must be DISARMED or HOLDING, got " + gait.controller_state)
         if not gait.configuration_valid:
             raise RuntimeError("controller configuration invalid: " + gait.configuration_error)
         if gait.backend not in {"mock", "dynamixel"}:
             raise RuntimeError("unsupported controller backend: " + gait.backend)
-        qos_path = Path(self.parameters["qos_override_file"]).expanduser()
-        if not qos_path.is_file() or not os.access(str(qos_path), os.R_OK):
-            raise RuntimeError("qos_override_file is not a readable file")
         bag_root = Path(self.parameters["bag_root"]).expanduser().resolve()
         bag_root.mkdir(parents=True, exist_ok=True)
         if not bag_root.is_dir() or not os.access(str(bag_root), os.W_OK):
@@ -370,32 +352,13 @@ class ExperimentManager:
         free_mb = shutil.disk_usage(str(bag_root)).free / (1024 * 1024)
         if free_mb < int(self.parameters["min_free_disk_mb"]):
             raise RuntimeError("insufficient free disk: {0:.1f} MiB".format(free_mb))
-        self._check_publishers()
+        self._check_topic_types()
         for key in ("command", "telemetry"):
             with self._lock:
                 received = self._received_at[key]
             if received == 0.0 or time.monotonic() - received > 2.0:
                 raise RuntimeError("fresh {0} stream unavailable".format(key))
-        return gait, bag_root, qos_path.resolve()
-
-    def _check_publishers(self):
-        from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
-
-        expected_durability = {
-            name: DurabilityPolicy.TRANSIENT_LOCAL if "transient_local" in QOS_CONTRACT[name]
-            else DurabilityPolicy.VOLATILE
-            for name in REQUIRED_TOPICS
-        }
-        for name, type_name in REQUIRED_TOPICS.items():
-            endpoints = self.node.get_publishers_info_by_topic(name)
-            compatible = any(
-                endpoint.topic_type == type_name
-                and endpoint.qos_profile.reliability == ReliabilityPolicy.RELIABLE
-                and endpoint.qos_profile.durability == expected_durability[name]
-                for endpoint in endpoints
-            )
-            if not compatible:
-                raise RuntimeError("missing compatible publisher/type/QoS on " + name)
+        return gait, bag_root
 
     def _start_run(self):
         # 先分配本次 run_id 并清空上一会话记录，避免 latched 的 STARTING 消息携带旧 run_id。
@@ -404,10 +367,10 @@ class ExperimentManager:
             self._state["run_id"] = run_id
             self._state["bag_relative_path"] = ""
         self._set_state("STARTING", True, False, "")
-        gait, bag_root, qos_path = self._preflight()
+        gait, bag_root = self._preflight()
         run_dir = bag_root / run_id
         run_dir.mkdir(parents=False, exist_ok=False)
-        bag_path = run_dir / "bag"
+        bag_path = run_dir / "bag.bag"
         if bag_path.exists():
             raise RuntimeError("bag output already exists")
         relative = self._relative_bag_path(bag_path)
@@ -424,11 +387,11 @@ class ExperimentManager:
         self._write_session()
         self._publish_state()
 
-        baseline = {name: self.node.count_subscribers(name) for name in REQUIRED_TOPICS}
+        baseline = self._subscriber_counts()
         recorder_log = (run_dir / "recorder.log").open("wb")
         try:
             self._recorder = subprocess.Popen(
-                make_recorder_argv(qos_path, bag_path),
+                make_recorder_argv(bag_path),
                 stdin=subprocess.DEVNULL,
                 stdout=recorder_log,
                 stderr=subprocess.STDOUT,
@@ -455,7 +418,8 @@ class ExperimentManager:
             raise RuntimeError("controller fault before arm")
         if gait.controller_state == "DISARMED":
             self._call_trigger("arm")
-            self._wait_controller({"HOLDING"}, time.monotonic(), self.parameters["stop_timeout_s"])
+            self._wait_controller(
+                {"HOLDING"}, time.monotonic(), self.parameters["stop_timeout_s"])
         elif gait.controller_state != "HOLDING":
             raise RuntimeError("controller left safe start state before arm")
         self._recording_delay(0.0)
@@ -468,9 +432,9 @@ class ExperimentManager:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self._check_recorder()
+            counts = self._subscriber_counts()
             subscriptions_ready = all(
-                self.node.count_subscribers(name) > baseline[name] for name in REQUIRED_TOPICS
-            )
+                counts.get(name, 0) > baseline.get(name, 0) for name in REQUIRED_TOPICS)
             with self._lock:
                 received = dict(self._received_at)
             fresh = all(
@@ -502,28 +466,18 @@ class ExperimentManager:
                 return
             time.sleep(min(0.05, remaining))
 
-    def _call_client(self, client, request, timeout_s):
-        timeout_s = float(timeout_s)
-        if not client.wait_for_service(timeout_sec=min(1.0, timeout_s)):
-            raise RuntimeError("service unavailable: " + client.srv_name)
-        future = client.call_async(request)
-        completed = threading.Event()
-        future.add_done_callback(lambda _future: completed.set())
-        if not completed.wait(timeout_s):
-            future.cancel()
-            raise RuntimeError("service timeout: " + client.srv_name)
-        result = future.result()
-        if result is None:
-            raise RuntimeError("service failed: " + client.srv_name)
-        return result
-
     def _call_trigger(self, name):
-        response = self._call_client(
-            self.trigger_clients[name], self._trigger_type.Request(),
-            self.parameters["stop_timeout_s"],
-        )
+        client = self.trigger_clients[name]
+        timeout_s = float(self.parameters["stop_timeout_s"])
+        try:
+            if not client.wait_for_service(timeout=min(1.0, timeout_s)):
+                raise RuntimeError("service unavailable: /fish/controller/" + name)
+            response = client(self._trigger_type.Request())
+        except self._rospy.ServiceException as exc:
+            raise RuntimeError("service call failed: {0}: {1}".format(name, exc))
         if not response.success:
-            raise RuntimeError("controller {0} rejected: {1}".format(name, response.message))
+            raise RuntimeError(
+                "controller {0} rejected: {1}".format(name, response.message))
         return response
 
     def _wait_controller(self, expected, after, timeout_s):
@@ -539,26 +493,13 @@ class ExperimentManager:
         raise RuntimeError("timed out waiting for controller " + "/".join(sorted(expected)))
 
     def _get_complete_parameter_snapshot(self):
-        list_request = self._list_parameters_type.Request()
-        list_request.depth = self._list_parameters_type.Request.DEPTH_RECURSIVE
-        list_request.prefixes = []
-        listed = self._call_client(
-            self.list_parameters_client, list_request, self.parameters["stop_timeout_s"]
-        )
-        names = sorted(listed.result.names)
-        request = self._get_parameters_type.Request()
-        request.names = names
-        response = self._call_client(
-            self.get_parameters_client, request, self.parameters["stop_timeout_s"]
-        )
-        if len(response.values) != len(names):
+        try:
+            snapshot = self._rospy.get_param("/fish/controller")
+        except Exception as exc:
+            raise RuntimeError("cannot read controller parameters: {0}".format(exc))
+        if not isinstance(snapshot, dict) or not snapshot:
             raise RuntimeError("incomplete controller parameter snapshot")
-        from rclpy.parameter import parameter_value_to_python
-
-        return {
-            name: parameter_value_to_python(value)
-            for name, value in zip(names, response.values)
-        }
+        return snapshot
 
     def _stop_active(self, forced_error=None):
         if not self._active or self._session is None:
@@ -585,8 +526,7 @@ class ExperimentManager:
             try:
                 self._call_trigger("stop_hold")
                 self._wait_controller(
-                    {"HOLDING"}, requested_at, self.parameters["stop_timeout_s"]
-                )
+                    {"HOLDING"}, requested_at, self.parameters["stop_timeout_s"])
                 hold_confirmed = True
             except Exception as exc:
                 errors.append("stop_hold confirmation failed: {0}".format(exc))
@@ -612,7 +552,9 @@ class ExperimentManager:
         from .bag_audit import audit_run
 
         try:
-            audit = audit_run(self._run_dir, info_timeout_s=float(self.parameters["finalize_timeout_s"]))
+            audit = audit_run(
+                self._run_dir,
+                info_timeout_s=float(self.parameters["finalize_timeout_s"]))
             validation = audit.get("validation") or {}
             bag_valid = audit.get("valid") is True
             failures = list(validation.get("failures", []))
@@ -635,11 +577,14 @@ class ExperimentManager:
             end_state if end_state in {"HOLDING", "FAULT", "ESTOP_LATCHED"} else "UNKNOWN"
         )
         self._session["stopped_ros_time_ns"] = self._now_ns()
-        self._session["status"] = "CLOSED_VALID" if bag_valid and hold_confirmed else "CLOSED_INVALID"
-        final_state = final_experiment_state(hold_confirmed, bag_valid, bool(forced_error))
+        self._session["status"] = (
+            "CLOSED_VALID" if bag_valid and hold_confirmed else "CLOSED_INVALID")
+        final_state = final_experiment_state(
+            hold_confirmed, bag_valid, bool(forced_error))
         if not errors and not bag_valid:
             errors.append("bag validation failed")
-        final_error = "; ".join(errors + validation["failures"][len(errors):]) if not bag_valid or errors else ""
+        final_error = "; ".join(
+            errors + validation["failures"][len(errors):]) if not bag_valid or errors else ""
         self._write_session()
         self._active = False
         self._recorder = None
@@ -681,7 +626,7 @@ class ExperimentManager:
         code = process.poll()
         return code if code is not None else "NOT_FINALIZED", signals, errors
 
-    def _heartbeat(self):
+    def _heartbeat(self, _event=None):
         with self._lock:
             state = self._state["state"]
             process = self._recorder if self._active else None
@@ -697,8 +642,7 @@ class ExperimentManager:
         if reason and not failure_enqueued:
             with self._lock:
                 self._failure_enqueued = True
-            recorder_alive = process is not None and process.poll() is None
-            self._set_state("STOPPING", True, recorder_alive, reason)
+            self._set_state("STOPPING", True, None, reason)
             try:
                 self._queue.put_nowait(("abort", reason))
             except queue.Full:
@@ -712,54 +656,47 @@ class ExperimentManager:
             if not self._accepting:
                 return
             self._accepting = False
-            needs_cleanup = self._active or self._state["state"] in {"STARTING", "RUNNING", "STOPPING"}
+            needs_cleanup = self._active or self._state["state"] in {
+                "STARTING", "RUNNING", "STOPPING"}
         if needs_cleanup:
             try:
                 self._queue.put(("shutdown", "manager shutdown"), timeout=0.5)
             except queue.Full:
-                self.node.get_logger().error("shutdown cleanup could not be queued")
+                self._rospy.logerr("shutdown cleanup could not be queued")
                 self._shutdown_done.set()
         else:
             self._shutdown_done.set()
 
-    def finish_shutdown(self):
+    def shutdown(self):
+        self.initiate_shutdown()
+        timeout = (
+            float(self.parameters["stop_timeout_s"])
+            + float(self.parameters["finalize_timeout_s"])
+            + float(self.parameters["tail_s"])
+            + 8.0
+        )
+        deadline = time.monotonic() + timeout
+        while not self._shutdown_done.is_set() and time.monotonic() < deadline:
+            time.sleep(0.05)
         self._stop_event.set()
         self.worker.join(timeout=2.0)
         if self.worker.is_alive():
-            self.node.get_logger().error("experiment worker did not stop within its bound")
+            self._rospy.logerr("experiment worker did not stop within its bound")
 
 
 def main():
-    import rclpy
+    import rospy
 
-    rclpy.init()
-    manager = None
+    rospy.init_node("experiment_manager")
+    manager = ExperimentManager()
+    rospy.on_shutdown(manager.shutdown)
     try:
-        manager = ExperimentManager()
-        rclpy.spin(manager.node)
+        rospy.spin()
     except KeyboardInterrupt:
         pass
     finally:
-        if manager is not None:
-            manager.initiate_shutdown()
-            timeout = (
-                float(manager.parameters["stop_timeout_s"])
-                + float(manager.parameters["finalize_timeout_s"])
-                + float(manager.parameters["tail_s"])
-                + 8.0
-            )
-            deadline = time.monotonic() + timeout
-            while not manager._shutdown_done.is_set() and time.monotonic() < deadline:
-                try:
-                    rclpy.spin_once(manager.node, timeout_sec=0.1)
-                except Exception:
-                    break
-            manager.finish_shutdown()
-            manager.node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-    return 0
+        manager.shutdown()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

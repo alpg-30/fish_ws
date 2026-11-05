@@ -26,13 +26,9 @@ PARAMETERS = {
 
 class RecordingContractTest(unittest.TestCase):
     def test_recorder_argv_is_explicit_and_scoped(self):
-        argv = make_recorder_argv("/tmp/qos.yaml", "/tmp/run/bag")
-        self.assertEqual(argv[:4], ["ros2", "bag", "record", "-s"])
-        self.assertIn("sqlite3", argv)
-        self.assertIn("--disable-keyboard-controls", argv)
-        self.assertIn("--qos-profile-overrides-path", argv)
-        self.assertIn("-o", argv)
-        self.assertEqual(set(argv[-7:]), set(REQUIRED_TOPICS))
+        argv = make_recorder_argv("/tmp/run/bag.bag")
+        self.assertEqual(argv[:4], ["rosbag", "record", "-O", "/tmp/run/bag.bag"])
+        self.assertEqual(set(argv[4:]), set(REQUIRED_TOPICS))
         self.assertNotIn("--all", argv)
         self.assertNotIn("-a", argv)
 
@@ -41,7 +37,7 @@ class RecordingContractTest(unittest.TestCase):
         self.assertNotEqual(make_run_id(now), make_run_id(now))
 
     def test_session_fields_and_completion_are_separate(self):
-        session = new_session("run", "mock", PARAMETERS, "bags/run/bag", 123, 7)
+        session = new_session("run", "mock", PARAMETERS, "bags/run/bag.bag", 123, 7)
         required = {
             "schema_version", "run_id", "backend", "ros_distro", "software_revision",
             "fluent_reference_revision_or_digest", "started_ros_time_ns",
@@ -50,6 +46,7 @@ class RecordingContractTest(unittest.TestCase):
             "required_topics", "bag_relative_path", "recorder_exit_code", "validation",
         }
         self.assertTrue(required.issubset(session))
+        self.assertEqual(session["ros_distro"], "noetic")
         self.assertFalse(session_close_valid(session))
         session.update(status="CLOSED_VALID", stop_hold_confirmed=True, recorder_exit_code=0)
         session["validation"].update(
@@ -79,13 +76,12 @@ class RecordingContractTest(unittest.TestCase):
 
 @unittest.skipUnless(
     os.environ.get("FISH_RUN_ROS_TESTS") == "1",
-    "actual 10s ROS bag integration requires FISH_RUN_ROS_TESTS=1 and a built Jazzy workspace",
+    "actual 10s ROS bag integration requires FISH_RUN_ROS_TESTS=1 and a built catkin workspace",
 )
 class ActualRosBagIntegrationTest(unittest.TestCase):
     def test_ten_second_mock_run_and_audit(self):
-        import rclpy
+        import rospy
         from fish_interfaces.msg import ExperimentState
-        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from std_srvs.srv import SetBool
 
         from fish_tools.bag_audit import audit_run
@@ -94,55 +90,48 @@ class ActualRosBagIntegrationTest(unittest.TestCase):
             root = Path(directory)
             launch_log = (root / "launch.log").open("wb")
             launch = subprocess.Popen(
-                ["ros2", "launch", "fish_bringup", "fish.launch.py", "bag_root:=" + str(root)],
+                ["roslaunch", "fish_bringup", "fish.launch", "bag_root:=" + str(root)],
                 stdout=launch_log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            node = None
             latest = []
+            client = None
             try:
-                rclpy.init()
-                node = rclpy.create_node("fish_bag_integration_test")
-                qos = QoSProfile(
-                    depth=1,
-                    reliability=ReliabilityPolicy.RELIABLE,
-                    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                )
-                node.create_subscription(
-                    ExperimentState, "/fish/experiment_state", latest.append, qos
-                )
-                client = node.create_client(SetBool, "/fish/experiment/set_running")
+                rospy.init_node("fish_bag_integration_test", anonymous=True)
+                rospy.Subscriber(
+                    "/fish/experiment_state", ExperimentState, latest.append, queue_size=1)
+                client = rospy.ServiceProxy("/fish/experiment/set_running", SetBool)
 
                 def spin_until(predicate, timeout):
                     deadline = time.monotonic() + timeout
                     while time.monotonic() < deadline:
                         if launch.poll() is not None:
                             self.fail("launch exited early; see " + str(root / "launch.log"))
-                        rclpy.spin_once(node, timeout_sec=0.1)
                         if predicate():
                             return True
+                        time.sleep(0.05)
                     return False
 
                 def request(target):
                     message = SetBool.Request()
                     message.data = target
-                    future = client.call_async(message)
-                    self.assertTrue(spin_until(future.done, 5.0), "set_running service timeout")
-                    response = future.result()
+                    response = client(message)
                     self.assertIsNotNone(response)
                     self.assertTrue(response.success, response.message)
 
-                self.assertTrue(spin_until(client.service_is_ready, 20.0), "manager unavailable")
+                self.assertTrue(spin_until(lambda: client.wait_for_service(timeout=0.5), 20.0),
+                                "manager unavailable")
                 self.assertTrue(
-                    spin_until(lambda: latest and latest[-1].state in {"IDLE", "HOLDING"}, 20.0),
-                    "manager did not become startable",
-                )
+                    spin_until(
+                        lambda: latest and latest[-1].state in {"IDLE", "HOLDING"},
+                        20.0),
+                    "manager did not become startable")
                 request(True)
                 self.assertTrue(
                     spin_until(lambda: latest and latest[-1].state == "RUNNING", 40.0),
-                    "run did not reach RUNNING: " + (latest[-1].last_error if latest else "no state"),
-                )
+                    "run did not reach RUNNING: " +
+                    (latest[-1].last_error if latest else "no state"))
                 spin_until(lambda: latest and latest[-1].state == "ERROR", 10.0)
                 self.assertEqual(latest[-1].state, "RUNNING", latest[-1].last_error)
                 request(False)
@@ -150,10 +139,8 @@ class ActualRosBagIntegrationTest(unittest.TestCase):
                     spin_until(
                         lambda: latest and not latest[-1].transition_in_progress
                         and latest[-1].state in {"HOLDING", "ERROR"},
-                        40.0,
-                    ),
-                    "run did not finish stopping",
-                )
+                        40.0),
+                    "run did not finish stopping")
                 self.assertEqual(latest[-1].state, "HOLDING", latest[-1].last_error)
                 self.assertEqual(latest[-1].last_error, "")
                 sessions = [path for path in root.glob("*/session.json")]
@@ -164,24 +151,23 @@ class ActualRosBagIntegrationTest(unittest.TestCase):
                 self.assertTrue(session_close_valid(session), json.dumps(session, indent=2))
                 self.assertEqual(report["evidence_class"], "mock")
             finally:
-                if node is not None and latest and latest[-1].state == "RUNNING" and "client" in locals():
-                    request_message = SetBool.Request()
-                    request_message.data = False
-                    stop_future = client.call_async(request_message)
-                    deadline = time.monotonic() + 40.0
-                    while time.monotonic() < deadline:
-                        rclpy.spin_once(node, timeout_sec=0.1)
-                        if (
-                            latest and not latest[-1].transition_in_progress
-                            and latest[-1].state in {"HOLDING", "ERROR"}
-                        ):
-                            break
-                    if not stop_future.done():
-                        stop_future.cancel()
-                if node is not None:
-                    node.destroy_node()
-                if rclpy.ok():
-                    rclpy.shutdown()
+                if client is not None and latest and latest[-1].state == "RUNNING":
+                    try:
+                        message = SetBool.Request()
+                        message.data = False
+                        client(message)
+                        deadline = time.monotonic() + 40.0
+                        while time.monotonic() < deadline:
+                            if (latest and not latest[-1].transition_in_progress
+                                    and latest[-1].state in {"HOLDING", "ERROR"}):
+                                break
+                            time.sleep(0.05)
+                    except Exception:
+                        pass
+                try:
+                    rospy.signal_shutdown("integration test done")
+                except Exception:
+                    pass
                 if launch.poll() is None:
                     os.killpg(launch.pid, signal.SIGINT)
                     try:

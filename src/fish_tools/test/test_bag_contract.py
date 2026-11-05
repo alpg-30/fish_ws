@@ -7,28 +7,31 @@ from fish_tools.bag_audit import (
     audit_run,
     count_valid_motor_samples,
     evidence_class,
+    required_topic_entries,
     sequence_statistics,
     topic_contract_failures,
 )
-from fish_tools.experiment_manager import required_topic_entries
 
 
 class TopicContractTest(unittest.TestCase):
     def test_exact_required_topic_types(self):
-        self.assertEqual(len(REQUIRED_TOPICS), 7)
-        self.assertEqual(REQUIRED_TOPICS["/fish/flapping_command"], "fish_interfaces/msg/FlappingCommand")
-        self.assertEqual(REQUIRED_TOPICS["/fish/motor_telemetry"], "fish_interfaces/msg/MotorTelemetry")
-        self.assertEqual(REQUIRED_TOPICS["/fish/experiment_state"], "fish_interfaces/msg/ExperimentState")
-        self.assertIn("/parameter_events", REQUIRED_TOPICS)
+        self.assertEqual(len(REQUIRED_TOPICS), 6)
+        self.assertEqual(REQUIRED_TOPICS["/fish/flapping_command"],
+                         "fish_interfaces/FlappingCommand")
+        self.assertEqual(REQUIRED_TOPICS["/fish/motor_telemetry"],
+                         "fish_interfaces/MotorTelemetry")
+        self.assertEqual(REQUIRED_TOPICS["/fish/experiment_state"],
+                         "fish_interfaces/ExperimentState")
+        self.assertNotIn("/parameter_events", REQUIRED_TOPICS)
 
     def test_session_and_recorded_topic_contract(self):
         entries = required_topic_entries()
-        self.assertEqual(topic_contract_failures(entries, REQUIRED_TOPICS), [])
-        failures = topic_contract_failures(entries, dict(REQUIRED_TOPICS))
-        self.assertEqual(failures, [])
+        self.assertEqual(topic_contract_failures(entries, dict(REQUIRED_TOPICS)), [])
         missing = dict(REQUIRED_TOPICS)
         del missing["/fish/gait_state"]
-        self.assertTrue(any("gait_state" in failure for failure in topic_contract_failures(entries, missing)))
+        self.assertTrue(any(
+            "gait_state" in failure
+            for failure in topic_contract_failures(entries, missing)))
 
     def test_missing_session_file_is_a_real_failure(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -45,8 +48,7 @@ class SequenceContractTest(unittest.TestCase):
         self.assertEqual(command["gap_event_count"], 1)
         self.assertEqual(command["missing_sample_count"], 2)
         self.assertEqual(telemetry["gap_count"], 0)
-        total = command["gap_count"] + telemetry["gap_count"]
-        self.assertEqual(total, 2)
+        self.assertEqual(command["gap_count"] + telemetry["gap_count"], 2)
 
     def test_duplicates_and_reordering_are_not_counted_as_gaps(self):
         report = sequence_statistics([1, 1, 0])

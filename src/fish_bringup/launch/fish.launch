@@ -1,0 +1,15 @@
+<launch>
+  <arg name="controller_config" default="$(find fish_bringup)/config/mock.yaml"/>
+  <arg name="bag_root" default="bags"/>
+
+  <group ns="fish">
+    <node pkg="fish_control" type="controller_node" name="controller" output="screen">
+      <rosparam file="$(arg controller_config)" command="load"/>
+    </node>
+
+    <node pkg="fish_tools" type="experiment_manager.py" name="experiment_manager" output="screen">
+      <rosparam file="$(find fish_bringup)/config/recording.yaml" command="load"/>
+      <param name="bag_root" value="$(arg bag_root)"/>
+    </node>
+  </group>
+</launch>

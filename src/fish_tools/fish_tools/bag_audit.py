@@ -1,4 +1,4 @@
-"""Offline rosbag2 contract auditing without import-time ROS dependencies."""
+"""Offline ROS 1 rosbag auditing without import-time ROS dependencies."""
 
 import argparse
 import json
@@ -9,15 +9,29 @@ from pathlib import Path
 
 
 REQUIRED_TOPICS = {
-    "/fish/flapping_command": "fish_interfaces/msg/FlappingCommand",
-    "/fish/motor_telemetry": "fish_interfaces/msg/MotorTelemetry",
-    "/fish/joint_states": "sensor_msgs/msg/JointState",
-    "/fish/gait_state": "fish_interfaces/msg/GaitState",
-    "/fish/experiment_state": "fish_interfaces/msg/ExperimentState",
-    "/fish/diagnostics": "diagnostic_msgs/msg/DiagnosticArray",
-    "/parameter_events": "rcl_interfaces/msg/ParameterEvent",
+    "/fish/flapping_command": "fish_interfaces/FlappingCommand",
+    "/fish/motor_telemetry": "fish_interfaces/MotorTelemetry",
+    "/fish/joint_states": "sensor_msgs/JointState",
+    "/fish/gait_state": "fish_interfaces/GaitState",
+    "/fish/experiment_state": "fish_interfaces/ExperimentState",
+    "/fish/diagnostics": "diagnostic_msgs/DiagnosticArray",
+}
+TOPIC_TRANSPORT = {
+    "/fish/flapping_command": "stream",
+    "/fish/motor_telemetry": "stream",
+    "/fish/joint_states": "stream",
+    "/fish/gait_state": "latched",
+    "/fish/experiment_state": "latched",
+    "/fish/diagnostics": "stream",
 }
 REQUIRED_EXPERIMENT_STATES = {"STARTING", "RUNNING", "STOPPING"}
+
+
+def required_topic_entries():
+    return [
+        {"name": name, "type": type_name, "transport": TOPIC_TRANSPORT[name]}
+        for name, type_name in REQUIRED_TOPICS.items()
+    ]
 
 
 def empty_validation():
@@ -81,7 +95,7 @@ def count_valid_motor_samples(records):
 
 
 def topic_contract_failures(session_topics, recorded_types):
-    """Check both the session declaration and actual rosbag2 topic types."""
+    """Check both the session declaration and actual rosbag topics."""
     failures = []
     declared = {}
     for entry in session_topics or []:
@@ -92,11 +106,12 @@ def topic_contract_failures(session_topics, recorded_types):
             failures.append("unexpected session topic: {0}".format(name))
         elif entry.get("type") != expected:
             failures.append("session type mismatch for {0}".format(name))
-        if not entry.get("qos_profile"):
-            failures.append("missing session QoS profile for {0}".format(name))
+        if not entry.get("transport"):
+            failures.append("missing session transport info for {0}".format(name))
     missing_declarations = set(REQUIRED_TOPICS) - set(declared)
     if missing_declarations:
-        failures.append("session topics missing: {0}".format(", ".join(sorted(missing_declarations))))
+        failures.append("session topics missing: {0}".format(
+            ", ".join(sorted(missing_declarations))))
     for name, expected in REQUIRED_TOPICS.items():
         actual = recorded_types.get(name)
         if actual is None:
@@ -141,7 +156,7 @@ def _resolve_session(input_path):
     with session_path.open("r", encoding="utf-8") as stream:
         session = json.load(stream)
     run_dir = session_path.parent
-    bag_path = run_dir / "bag"
+    bag_path = run_dir / "bag.bag"
     if not bag_path.exists():
         configured = Path(session.get("bag_relative_path", ""))
         if configured.is_absolute():
@@ -156,14 +171,14 @@ def _resolve_session(input_path):
 def _run_bag_info(bag_path, timeout_s, validation):
     try:
         completed = subprocess.run(
-            ["ros2", "bag", "info", str(bag_path)],
+            ["rosbag", "info", str(bag_path)],
             check=False,
             capture_output=True,
             text=True,
             timeout=timeout_s,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        _add_failure(validation, "ros2 bag info failed: {0}".format(exc))
+        _add_failure(validation, "rosbag info failed: {0}".format(exc))
         return {"returncode": None, "stdout": "", "stderr": str(exc)}
     result = {
         "returncode": completed.returncode,
@@ -172,58 +187,40 @@ def _run_bag_info(bag_path, timeout_s, validation):
     }
     validation["metadata_readable"] = completed.returncode == 0
     if completed.returncode != 0:
-        _add_failure(validation, "ros2 bag info returned {0}".format(completed.returncode))
+        _add_failure(validation, "rosbag info returned {0}".format(completed.returncode))
     return result
 
 
 def _read_bag(bag_path, session, validation):
     try:
-        import rosbag2_py
-        from rosidl_runtime_py.utilities import get_message
-        from rclpy.serialization import deserialize_message
-        from rosbag2_py import SequentialReader
+        import rosbag
     except ImportError as exc:
-        _add_failure(validation, "ROS bag reader unavailable: {0}".format(exc))
+        _add_failure(validation, "rosbag Python API unavailable: {0}".format(exc))
         return {}, {}
 
+    bag = None
     try:
-        reader = SequentialReader()
-        storage_options = rosbag2_py.StorageOptions(
-            uri=str(bag_path), storage_id=session.get("storage_id", "sqlite3")
-        )
-        converter_options = rosbag2_py.ConverterOptions(
-            input_serialization_format="cdr", output_serialization_format="cdr"
-        )
-        reader.open(storage_options, converter_options)
+        bag = rosbag.Bag(str(bag_path), "r")
+        info = bag.get_type_and_topic_info()
         recorded_types = {
-            entry.name: entry.type for entry in reader.get_all_topics_and_types()
+            name: entry.msg_type for name, entry in info.topics.items()
         }
-        message_classes = {}
-
-        def message_class(type_name):
-            if type_name not in message_classes:
-                message_classes[type_name] = get_message(type_name)
-            return message_classes[type_name]
-
         counts = {name: 0 for name in REQUIRED_TOPICS}
         telemetry_records = []
-        sequences = {name: [] for name in (
-            "/fish/flapping_command", "/fish/motor_telemetry"
-        )}
+        sequences = {
+            "/fish/flapping_command": [],
+            "/fish/motor_telemetry": [],
+        }
         experiment_messages = []
         gait_messages = []
-        observed_backends = {name: set() for name in (
-            "/fish/flapping_command", "/fish/motor_telemetry", "/fish/gait_state"
-        )}
+        observed_backends = {
+            name: set() for name in (
+                "/fish/flapping_command", "/fish/motor_telemetry", "/fish/gait_state")
+        }
         observed_revisions = {name: set() for name in observed_backends}
         malformed_telemetry = False
-        while reader.has_next():
-            topic, raw, _timestamp = reader.read_next()
-            if topic not in REQUIRED_TOPICS:
-                continue
+        for topic, message, _stamp in bag.read_messages(topics=list(REQUIRED_TOPICS)):
             counts[topic] = counts.get(topic, 0) + 1
-            type_name = recorded_types.get(topic, REQUIRED_TOPICS[topic])
-            message = deserialize_message(raw, message_class(type_name))
             if topic == "/fish/motor_telemetry":
                 record = {
                     "valid": list(message.valid),
@@ -247,8 +244,11 @@ def _read_bag(bag_path, session, validation):
             elif topic == "/fish/experiment_state":
                 experiment_messages.append(message)
     except Exception as exc:
-        _add_failure(validation, "sqlite message audit failed: {0}".format(exc))
+        _add_failure(validation, "rosbag message audit failed: {0}".format(exc))
         return {}, {}
+    finally:
+        if bag is not None:
+            bag.close()
 
     for failure in topic_contract_failures(session.get("required_topics"), recorded_types):
         _add_failure(validation, failure)
@@ -262,7 +262,8 @@ def _read_bag(bag_path, session, validation):
     for key in ("per_motor_valid_angle_samples", "per_motor_valid_current_samples"):
         for index, count in enumerate(validation[key]):
             if count == 0:
-                _add_failure(validation, "no valid {0} samples for motor index {1}".format(key, index))
+                _add_failure(validation, "no valid {0} samples for motor index {1}".format(
+                    key, index))
 
     command_stats = sequence_statistics(sequences["/fish/flapping_command"])
     telemetry_stats = sequence_statistics(sequences["/fish/motor_telemetry"])
@@ -283,7 +284,8 @@ def _read_bag(bag_path, session, validation):
         if not values:
             _add_failure(validation, "no backend evidence on {0}".format(topic))
         elif values != {backend}:
-            _add_failure(validation, "backend mismatch on {0}: {1}".format(topic, sorted(values)))
+            _add_failure(validation, "backend mismatch on {0}: {1}".format(
+                topic, sorted(values)))
 
     initial_revision = session.get("initial_active_config_revision")
     for topic, values in observed_revisions.items():
@@ -318,7 +320,9 @@ def _read_bag(bag_path, session, validation):
         "topic_message_counts": counts,
         "recorded_topic_types": recorded_types,
         "experiment_states": sorted(experiment_states),
-        "controller_states": sorted({message.controller_state for message in gait_messages}),
+        "controller_states": sorted({
+            message.controller_state for message in gait_messages
+        }),
     }
     return recorded_types, details
 
@@ -355,8 +359,8 @@ def audit_run(input_path, info_timeout_s=30.0):
     for field in ("software_revision", "fluent_reference_revision_or_digest"):
         if not isinstance(session.get(field), str) or not session.get(field):
             _add_failure(validation, "session revision field missing: " + field)
-    if not bag_path.is_dir():
-        _add_failure(validation, "bag directory missing: {0}".format(bag_path))
+    if not bag_path.is_file():
+        _add_failure(validation, "bag file missing: {0}".format(bag_path))
         return report
     report["bag_info"] = _run_bag_info(bag_path, info_timeout_s, validation)
     _recorded_types, details = _read_bag(bag_path, session, validation)
@@ -372,7 +376,7 @@ def audit_run(input_path, info_timeout_s=30.0):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Audit one fish rosbag2 session.")
+    parser = argparse.ArgumentParser(description="Audit one fish rosbag session.")
     parser.add_argument("path", help="Run directory containing session.json, or its path")
     parser.add_argument("--info-timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
