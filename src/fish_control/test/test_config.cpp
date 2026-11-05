@@ -91,12 +91,32 @@ int main() {
 
   candidate = current;
   candidate.backend = "dynamixel";
+  candidate.mapping_kind = "linear_calibrated";
   rejected(candidate, "hardware requires nonempty device and positive baudrate");
   candidate.bus_device = "/dev/ttyUSB0";
   rejected(candidate, "hardware still rejects zero baudrate");
-  candidate.bus_baudrate = 57600;
+  candidate.bus_baudrate = 1000000;
   check(fish_control::validate_config(candidate).valid,
-        "complete hardware-shaped bus fields pass pure validation");
+        "complete hardware config passes pure validation");
+  check(!fish_control::mapping_is_valid(candidate),
+        "unconfirmed hardware calibration must block arm");
+  candidate.calibration_confirmed = true;
+  check(fish_control::mapping_is_valid(candidate),
+        "confirmed hardware calibration allows arm");
+  candidate.mapping_kind = "mock_linear";
+  rejected(candidate, "hardware requires linear_calibrated mapping");
+  candidate.mapping_kind = "linear_calibrated";
+  candidate.backend = "mock";
+  rejected(candidate, "mock backend rejects linear_calibrated mapping");
+
+  candidate = current;
+  candidate.backend = "dynamixel";
+  candidate.mapping_kind = "linear_calibrated";
+  candidate.bus_device = "/dev/ttyUSB0";
+  candidate.bus_baudrate = 1000000;
+  candidate.zero_raw = {0, 0, 0, 0};
+  candidate.min_rad = {-1.57, -1.57, -1.57, -1.57};
+  rejected(candidate, "joint limits that wrap outside 0..4095 must be rejected");
 
   std::cout << "[PASS] config validation and atomic transaction tests\n";
   return 0;

@@ -12,6 +12,7 @@ def generate_launch_description():
     recording_config = share / "config" / "recording.yaml"
     qos_config = share / "config" / "qos.yaml"
     bag_root = LaunchConfiguration("bag_root")
+    controller_config = LaunchConfiguration("controller_config")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -19,12 +20,17 @@ def generate_launch_description():
             default_value="bags",
             description="Root directory for per-run rosbag2 sessions.",
         ),
+        DeclareLaunchArgument(
+            "controller_config",
+            default_value=str(mock_config),
+            description="Controller parameter file: mock.yaml or hardware.yaml.",
+        ),
         Node(
             package="fish_control",
             executable="controller_node",
             name="controller",
             namespace="fish",
-            parameters=[str(mock_config)],
+            parameters=[controller_config],
             output="screen",
         ),
         Node(

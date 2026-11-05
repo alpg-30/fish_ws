@@ -1,4 +1,5 @@
 #include "fish_control/motor_bus.hpp"
+#include "fish_control/motor_bus_dynamixel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -134,8 +135,7 @@ std::unique_ptr<MotorBus> make_motor_bus(const Config& config) {
     return std::make_unique<MockMotorBus>(config);
   }
   if (config.backend == "dynamixel") {
-    throw std::runtime_error(
-      "backend dynamixel is not integrated; refusing to fall back to mock");
+    return make_dynamixel_motor_bus(config);
   }
   throw std::runtime_error("unsupported motor backend: " + config.backend);
 }
@@ -160,6 +160,22 @@ double current_raw_to_amps(std::int16_t signed_raw) {
 double current_u16_to_amps(std::uint16_t raw) {
   const std::int32_t signed_raw = raw < 32768 ? raw : static_cast<std::int32_t>(raw) - 65536;
   return static_cast<double>(signed_raw) * kCurrentScale;
+}
+
+double velocity_raw_to_rad_s(
+  std::int32_t raw, std::size_t index, const Config& config) {
+  const double output_rad_per_s =
+    static_cast<double>(raw) * 0.229 * 2.0 * kPi / 60.0;
+  return output_rad_per_s /
+         (static_cast<double>(config.direction[index]) * config.external_ratio[index]);
+}
+
+double voltage_raw_to_volts(std::uint16_t raw) {
+  return static_cast<double>(raw) * 0.1;
+}
+
+double temperature_raw_to_celsius(std::uint8_t raw) {
+  return static_cast<double>(raw);
 }
 
 }  // namespace fish_control

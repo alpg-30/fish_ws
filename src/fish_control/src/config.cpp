@@ -4,6 +4,8 @@
 #include <limits>
 #include <set>
 
+#include "fish_control/motor_bus.hpp"
+
 namespace fish_control {
 namespace {
 
@@ -125,9 +127,17 @@ ValidationResult validate_config(const Config& c) {
   if (!finite_vector(c.x_model) || !finite_vector(c.z_model) || c.model_unit.empty()) {
     return reject("geometry arrays must have four finite values and model_unit must be set");
   }
-  if (c.mapping_kind != "mock_linear" || !finite_vector(c.mapping_gain) ||
-      !finite_vector(c.mapping_offset)) {
-    return reject("only complete mock_linear mapping is supported");
+  if (c.mapping_kind != "mock_linear" && c.mapping_kind != "linear_calibrated") {
+    return reject("mapping.kind must be mock_linear or linear_calibrated");
+  }
+  if (!finite_vector(c.mapping_gain) || !finite_vector(c.mapping_offset)) {
+    return reject("mapping arrays must have four finite values");
+  }
+  if (c.backend == "mock" && c.mapping_kind != "mock_linear") {
+    return reject("mock backend requires mock_linear mapping");
+  }
+  if (c.backend == "dynamixel" && c.mapping_kind != "linear_calibrated") {
+    return reject("dynamixel backend requires linear_calibrated mapping");
   }
   if (c.zero_raw.size() != kMotorCount || c.direction.size() != kMotorCount ||
       !positive_vector(c.external_ratio)) {
@@ -150,6 +160,15 @@ ValidationResult validate_config(const Config& c) {
   for (std::size_t i = 0; i < kMotorCount; ++i) {
     if (c.min_rad[i] >= c.max_rad[i] || c.min_voltage_v[i] >= c.max_voltage_v[i]) {
       return reject("limit lower bounds must be below upper bounds");
+    }
+  }
+  if (c.backend == "dynamixel") {
+    for (std::size_t i = 0; i < kMotorCount; ++i) {
+      const std::int32_t low = joint_to_raw(c.min_rad[i], i, c);
+      const std::int32_t high = joint_to_raw(c.max_rad[i], i, c);
+      if (low < 0 || high > 4095 || low > high) {
+        return reject("joint limits must map inside the 0..4095 single-turn range");
+      }
     }
   }
   if (!finite(c.current_trip_duration_s) || c.current_trip_duration_s <= 0.0 ||
@@ -195,8 +214,16 @@ ValidationResult validate_config_update(
 }
 
 bool mapping_is_valid(const Config& config) {
-  return config.backend == "mock" && config.mapping_kind == "mock_linear" &&
-         finite_vector(config.mapping_gain) && finite_vector(config.mapping_offset);
+  if (!finite_vector(config.mapping_gain) || !finite_vector(config.mapping_offset)) {
+    return false;
+  }
+  if (config.backend == "mock") {
+    return config.mapping_kind == "mock_linear";
+  }
+  if (config.backend == "dynamixel") {
+    return config.mapping_kind == "linear_calibrated" && config.calibration_confirmed;
+  }
+  return false;
 }
 
 }  // namespace fish_control

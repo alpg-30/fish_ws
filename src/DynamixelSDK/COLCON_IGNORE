@@ -1,0 +1,2 @@
+# 让 colcon 忽略整个 DynamixelSDK 仓库（其中 ros/ 下是 ROS 1 catkin 包）。
+# fish_control 直接编译 c++/ 下的源码，不通过 ament 依赖该目录。

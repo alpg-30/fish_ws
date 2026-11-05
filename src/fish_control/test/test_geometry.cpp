@@ -49,6 +49,9 @@ int main() {
   near(fish_control::raw_to_joint(0, 0, raw_config), kPi / 2.0);
   near(fish_control::current_raw_to_amps(static_cast<std::int16_t>(0xFFFF)), -0.00269);
   near(fish_control::current_u16_to_amps(0xFFFF), -0.00269);
+  near(fish_control::velocity_raw_to_rad_s(1000, 0, raw_config), -11.9904119612);
+  near(fish_control::voltage_raw_to_volts(120), 12.0);
+  near(fish_control::temperature_raw_to_celsius(41), 41.0);
 
   auto not_calibrated = c;
   not_calibrated.mapping_kind = "not_calibrated";
@@ -59,13 +62,15 @@ int main() {
   auto hardware = c;
   hardware.backend = "dynamixel";
   bool explicit_failure = false;
+  bool backend_is_dynamixel = false;
   try {
     auto bus = fish_control::make_motor_bus(hardware);
-    (void)bus;
+    backend_is_dynamixel = bus->backend() == "dynamixel";
   } catch (const std::runtime_error& error) {
-    explicit_failure = std::string(error.what()).find("not integrated") != std::string::npos;
+    explicit_failure = std::string(error.what()).find("DynamixelSDK") != std::string::npos;
   }
-  check(explicit_failure, "dynamixel must fail explicitly without mock fallback");
+  check(explicit_failure || backend_is_dynamixel,
+        "dynamixel backend must be real or fail explicitly, never fall back to mock");
   std::cout << "[PASS] geometry, mapping, raw/current conversion and backend tests\n";
   return 0;
 }

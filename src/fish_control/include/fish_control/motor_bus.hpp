@@ -65,5 +65,10 @@ std::int32_t joint_to_raw(double position_rad, std::size_t index, const Config& 
 double raw_to_joint(std::int32_t raw, std::size_t index, const Config& config);
 double current_raw_to_amps(std::int16_t signed_raw);
 double current_u16_to_amps(std::uint16_t raw);
+// X 系列 430 的 Present Velocity / Input Voltage / Temperature 单位换算。
+double velocity_raw_to_rad_s(
+  std::int32_t raw, std::size_t index, const Config& config);
+double voltage_raw_to_volts(std::uint16_t raw);
+double temperature_raw_to_celsius(std::uint8_t raw);
 
 }  // namespace fish_control

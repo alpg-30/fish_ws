@@ -13,9 +13,14 @@ find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
+find_package(Threads REQUIRED)
+
+set(FISH_DYNAMIXEL_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../DynamixelSDK/c++"
+    CACHE PATH "ROBOTIS DynamixelSDK C++ root directory")
 
 add_library(fish_control_logic
   src/motor_bus_mock.cpp
+  src/motor_bus_dynamixel.cpp
   src/fluent_waveform.cpp
   src/config.cpp
   src/safety.cpp
@@ -24,6 +29,37 @@ target_include_directories(fish_control_logic PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+
+if(EXISTS "${FISH_DYNAMIXEL_SDK_DIR}/include/dynamixel_sdk/dynamixel_sdk.h")
+  add_library(fish_dynamixel_sdk STATIC
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/group_bulk_read.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/group_bulk_write.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/group_sync_read.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/group_sync_write.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/group_fast_bulk_read.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/group_fast_sync_read.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/group_handler.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/packet_handler.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/port_handler.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/port_handler_linux.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/protocol1_packet_handler.cpp
+    ${FISH_DYNAMIXEL_SDK_DIR}/src/dynamixel_sdk/protocol2_packet_handler.cpp
+  )
+  target_include_directories(fish_dynamixel_sdk PUBLIC
+    "${FISH_DYNAMIXEL_SDK_DIR}/include"
+    "${FISH_DYNAMIXEL_SDK_DIR}/include/dynamixel_sdk"
+  )
+  target_compile_definitions(fish_dynamixel_sdk PRIVATE LINUX _GNU_SOURCE)
+  set_target_properties(fish_dynamixel_sdk PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_link_libraries(fish_dynamixel_sdk PUBLIC Threads::Threads)
+  target_compile_definitions(fish_control_logic PRIVATE FISH_HAVE_DYNAMIXEL_SDK=1)
+  target_link_libraries(fish_control_logic PUBLIC fish_dynamixel_sdk)
+  message(STATUS "DynamixelSDK: ${FISH_DYNAMIXEL_SDK_DIR}")
+else()
+  message(WARNING
+    "DynamixelSDK not found at ${FISH_DYNAMIXEL_SDK_DIR}; "
+    "the dynamixel backend will fail at runtime instead of falling back to mock")
+endif()
 
 add_executable(controller_node src/controller_node.cpp)
 target_link_libraries(controller_node fish_control_logic)

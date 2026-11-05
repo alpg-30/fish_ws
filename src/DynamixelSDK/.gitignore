@@ -1,0 +1,11 @@
+# 本仓库只跟踪编译实机后端所需的 DynamixelSDK C++ 子集。
+# 其余语言绑定、示例与构建目录保留在本地，不纳入 Git。
+/*
+!.gitignore
+!LICENSE
+!SDK_REVISION
+!COLCON_IGNORE
+!c++/
+c++/*
+!c++/include/
+!c++/src/

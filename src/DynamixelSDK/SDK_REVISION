@@ -1,0 +1,4 @@
+upstream https://github.com/ROBOTIS-GIT/DynamixelSDK
+revision 3450c7078917b262d9b36042c15444047aae226e
+subset c++/include c++/src
+license Apache-2.0 (see LICENSE)

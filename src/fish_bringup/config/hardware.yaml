@@ -1,0 +1,62 @@
+# 实机配置模板：DYNAMIXEL XW430-T200（IP68 防水，RS485，Protocol 2.0）。
+# 目标运行环境为 Jetson Orin Nano + Ubuntu 24.04 + ROS 2 Jazzy；
+# 端口与权限在这台 SoC 上配置，与开发机无关。
+# 使用前必须确认：
+#   1. 舵机已设为 Position Control Mode，ID 与 motors.ids 一致；
+#   2. bus.baudrate 与舵机 EEPROM 内 Baud Rate 一致（工厂默认 57600）；
+#   3. bus.device 指向 SoC 上的适配器（U2D2 常见 /dev/ttyUSB0；
+#      CDC-ACM 适配器可能是 /dev/ttyACM0，用 ls /dev/tty{USB,ACM}* 确认），
+#      运行用户需在 dialout 组或有对应 udev 规则；
+#   4. 已断电手动标定 zero_raw / direction / external_ratio 与 mapping 增益、限位；
+#   5. 仅在确认机械安全、急停可用后，才把 calibration.confirmed 改为 true。
+# calibration.confirmed=false 时 arm 会被拒绝，不会输出扭矩。
+/fish/controller:
+  ros__parameters:
+    backend: dynamixel
+    timing.control_hz: 100.0
+    timing.telemetry_hz: 50.0
+
+    motors.names: [fin_0, fin_1, fin_2, fin_3]
+    motors.ids: [1, 2, 3, 4]
+
+    gait.waveform: fluent_asymmetric_delayed
+    gait.amplitude_model: 0.05
+    gait.frequency_hz: 0.5
+    gait.tf_coeff: 0.65
+    gait.body_coeff: 0.5
+
+    geometry.x_model: [0.0, 0.12, 0.24, 0.36]
+    geometry.z_model: [0.20, -0.20, 0.25, -0.25]
+    geometry.model_unit: fluent_model_unit
+
+    mapping.kind: linear_calibrated
+    # TODO 标定后替换：模型位移到关节角的增益和零位。
+    mapping.gain_rad_per_model_unit: [0.0, 0.0, 0.0, 0.0]
+    mapping.offset_rad: [0.0, 0.0, 0.0, 0.0]
+
+    # TODO 标定后替换：中位 raw、方向、外部传动比（不含舵机内置减速比）。
+    calibration.zero_raw: [2048, 2048, 2048, 2048]
+    calibration.direction: [1, 1, 1, 1]
+    calibration.external_ratio: [1.0, 1.0, 1.0, 1.0]
+    calibration.confirmed: false
+
+    # TODO 按机械行程与实测安全值替换。
+    limits.min_rad: [-0.6, -0.6, -0.6, -0.6]
+    limits.max_rad: [0.6, 0.6, 0.6, 0.6]
+    limits.max_velocity_rad_s: [4.0, 4.0, 4.0, 4.0]
+    limits.max_acceleration_rad_s2: [20.0, 20.0, 20.0, 20.0]
+    limits.current_trip_a: [1.0, 1.0, 1.0, 1.0]
+    limits.current_trip_duration_s: 0.2
+    limits.temperature_trip_c: [70.0, 70.0, 70.0, 70.0]
+    limits.min_voltage_v: [10.0, 10.0, 10.0, 10.0]
+    limits.max_voltage_v: [14.8, 14.8, 14.8, 14.8]
+
+    safety.feedback_timeout_s: 0.2
+    safety.bus_watchdog_ms: 200
+    safety.normal_stop_policy: hold_position
+    safety.require_recording: true
+
+    bus.device: /dev/ttyUSB0
+    # 建议 1000000；若舵机仍为工厂默认 57600，请先改 EEPROM 并同步此处。
+    bus.baudrate: 1000000
+    bus.protocol_version: 2.0

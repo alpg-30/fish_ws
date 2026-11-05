@@ -26,11 +26,35 @@ colcon test-result --verbose
 
 ## 运行
 
+mock（默认）：
+
 ```bash
 cd 03_hardware/fish_ws
 source install/setup.bash
 ros2 launch fish_bringup fish.launch.py
 ```
+
+实机（先完成标定并确认 `calibration.confirmed: true`）：
+
+```bash
+ros2 launch fish_bringup fish.launch.py \
+  controller_config:=$(ros2 pkg prefix --share fish_bringup)/config/hardware.yaml
+```
+
+实机后端面向 **Jetson Orin Nano + Ubuntu 24.04 + ROS 2 Jazzy** 上的
+**DYNAMIXEL XW430-T200**（IP68、RS485、Protocol 2.0，位置控制模式），
+直接编译仓库内 `src/DynamixelSDK/c++`，使用同步读 `126..146` / `64..70` 与同步写 `116`。
+未找到 SDK 时该后端会显式报错，不会回退 mock。
+构建时可用 `-DFISH_DYNAMIXEL_SDK_DIR=<其它路径>` 指向外部 SDK。
+仓库只跟踪 DynamixelSDK 的 `c++/include`、`c++/src`、`LICENSE` 与 `SDK_REVISION`
+（Apache-2.0）；其它语言绑定、示例与构建目录不纳入 Git。
+串口设备名与权限只在 SoC 上配置，例如 U2D2 常见 `/dev/ttyUSB0`，CDC-ACM 适配器可能是 `/dev/ttyACM0`。
+
+实机前提：
+
+- 舵机设为 Position Control Mode，ID 与 `motors.ids` 一致，`bus.baudrate` 与 EEPROM 设置一致（模板用 1 Mbps）。
+- 填写 `zero_raw`、`direction`、`external_ratio`、`mapping.*` 与 `limits.*` 后再把 `calibration.confirmed` 设为 `true`；否则 arm 会被拒绝。
+- 正常停止只保持位置、不卸载扭矩；关闭 controller 进程也不会自动卸扭矩，断电或显式 disarm 才会释放。
 
 另开一个终端运行键盘（需要交互式 TTY）：
 
@@ -71,5 +95,5 @@ ros2 run fish_tools bag_audit bags/<run_id>
 ## 当前边界
 
 - mock 角度/电流是模拟值，`backend=mock`；不能当作实机实测数据。
-- Fluent 时间相位与空间模型波形可独立核对；几何到关节角的实机映射未标定，`mapping.kind` 仅支持 `mock_linear`。
-- SDK、总线参数、四电机 ID/方位、机械零位与安全阈值待用户提供后再接实机。
+- Fluent 时间相位与空间模型波形可独立核对；几何到关节角的实机映射未标定，`mapping.kind` 仅支持 `mock_linear`（mock）或 `linear_calibrated`（实机）。
+- 实机后端已接入 DynamixelSDK，但四电机 ID/方位、机械零位、限位与安全阈值仍需按实机标定；未标定时 `calibration.confirmed` 保持 `false`。
