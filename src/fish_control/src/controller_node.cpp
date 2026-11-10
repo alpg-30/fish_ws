@@ -305,7 +305,7 @@ private:
       return false;
     }
     const double age = static_cast<double>(now_ns - last_experiment_ns_) * 1e-9;
-    return age >= 0.0 && age <= kRecorderTimeoutS;
+    return age <= kRecorderTimeoutS;
   }
 
   void controlTick(const ros::TimerEvent&) {
@@ -554,7 +554,7 @@ private:
     }
     const double age =
       static_cast<double>(now_ns - last_motor_state_.host_steady_time_ns) * 1e-9;
-    return age >= 0.0 && age <= active_config_.feedback_timeout_s;
+    return age <= active_config_.feedback_timeout_s;
   }
 
   void read_feedback_locked(bool publish) {
