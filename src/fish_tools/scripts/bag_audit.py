@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 import sys
 
 from fish_tools.bag_audit import main

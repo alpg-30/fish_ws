@@ -1,15 +1,25 @@
+# -*- coding: utf-8 -*-
+
 import json
 import os
-import queue
-import shutil
 import signal
 import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 
+from ._compat import (
+    atomic_replace,
+    devnull,
+    disk_free_mb,
+    makedirs,
+    monotonic,
+    popen_session_kwargs,
+    posix_path,
+    queue,
+    wait_process,
+)
 from .bag_audit import REQUIRED_TOPICS, required_topic_entries
 
 
@@ -45,33 +55,35 @@ def final_experiment_state(stop_hold_confirmed, bag_valid, forced_error):
 
 
 def make_run_id(now=None):
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.utcnow()
     return now.strftime("%Y%m%dT%H%M%S.%fZ") + "-" + uuid.uuid4().hex[:10]
 
 
 def make_recorder_argv(bag_path):
-    return [
-        "rosbag",
-        "record",
-        "-O",
-        str(bag_path),
-        *REQUIRED_TOPICS.keys(),
-    ]
+    return (
+        ["rosbag", "record", "-O", str(bag_path)] +
+        list(REQUIRED_TOPICS.keys())
+    )
 
 
 def atomic_write_json(path, value):
-    path = Path(path)
-    temporary = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
+    path = os.path.abspath(os.path.expanduser(str(path)))
+    directory = os.path.dirname(path)
+    basename = os.path.basename(path)
+    temporary = os.path.join(directory, basename + ".tmp-" + uuid.uuid4().hex)
     try:
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
-            stream.write("\n")
+        payload = json.dumps(value, indent=2, sort_keys=True, allow_nan=False)
+        if not isinstance(payload, bytes):
+            payload = payload.encode("utf-8")
+        with open(temporary, "wb") as stream:
+            stream.write(payload)
+            stream.write(b"\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def new_session(run_id, backend, parameters, bag_relative_path, started_ros_time_ns,
@@ -80,7 +92,7 @@ def new_session(run_id, backend, parameters, bag_relative_path, started_ros_time
         "schema_version": 1,
         "run_id": run_id,
         "backend": backend,
-        "ros_distro": "noetic",
+        "ros_distro": os.environ.get("ROS_DISTRO", "unknown"),
         "software_revision": parameters["software_revision"],
         "fluent_reference_revision_or_digest": parameters["fluent_reference"],
         "started_ros_time_ns": int(started_ros_time_ns),
@@ -109,7 +121,8 @@ class ExperimentManager:
         import rospy
         from fish_interfaces.msg import (
             ExperimentState, FlappingCommand, GaitState, MotorTelemetry)
-        from std_srvs.srv import SetBool, Trigger
+        from std_srvs.srv import (SetBool, SetBoolResponse, Trigger,
+                                  TriggerRequest)
 
         self._rospy = rospy
         self._messages = {
@@ -118,8 +131,8 @@ class ExperimentManager:
             "command": FlappingCommand,
             "telemetry": MotorTelemetry,
         }
-        self._trigger_type = Trigger
-        self._set_bool_type = SetBool
+        self._trigger_request_type = TriggerRequest
+        self._set_bool_response_type = SetBoolResponse
         self.parameters = self._load_parameters()
         self._lock = threading.RLock()
         self._queue = queue.Queue(maxsize=8)
@@ -163,7 +176,8 @@ class ExperimentManager:
         self.timer = rospy.Timer(rospy.Duration(0.5), self._heartbeat)
         self._publish_state()
         self.worker = threading.Thread(
-            target=self._worker_loop, name="experiment-worker", daemon=True)
+            target=self._worker_loop, name="experiment-worker")
+        self.worker.daemon = True
         self.worker.start()
 
     def _load_parameters(self):
@@ -199,17 +213,17 @@ class ExperimentManager:
     def _on_gait(self, message):
         with self._lock:
             self._latest["gait"] = message
-            self._received_at["gait"] = time.monotonic()
+            self._received_at["gait"] = monotonic()
 
     def _on_command(self, message):
         with self._lock:
             self._latest["command"] = message
-            self._received_at["command"] = time.monotonic()
+            self._received_at["command"] = monotonic()
 
     def _on_telemetry(self, message):
         with self._lock:
             self._latest["telemetry"] = message
-            self._received_at["telemetry"] = time.monotonic()
+            self._received_at["telemetry"] = monotonic()
 
     def _latest_gait(self):
         with self._lock:
@@ -250,7 +264,7 @@ class ExperimentManager:
 
     def _on_set_running(self, request):
         target = bool(request.data)
-        response = self._set_bool_type.Response()
+        response = self._set_bool_response_type()
         with self._lock:
             if not self._accepting:
                 response.success = False
@@ -318,12 +332,19 @@ class ExperimentManager:
             atomic_write_json(self._session_path, self._session)
 
     def _relative_bag_path(self, bag_path):
-        return Path(os.path.relpath(str(bag_path), str(Path.cwd()))).as_posix()
+        return posix_path(os.path.relpath(str(bag_path), os.getcwd()))
 
     def _subscriber_counts(self):
         try:
             state = self._rospy.get_master().getSystemState()
-            return {topic: len(nodes) for topic, nodes in state[1]}
+            # Melodic returns the raw XML-RPC [code, status, system_state];
+            # newer rospy versions may return system_state directly.
+            if (isinstance(state, (list, tuple)) and len(state) == 3 and
+                    isinstance(state[0], int)):
+                system_state = state[2]
+            else:
+                system_state = state
+            return {topic: len(nodes) for topic, nodes in system_state[1]}
         except Exception as exc:
             self._rospy.logwarn_throttle(5.0, "cannot query subscriber counts: {0}".format(exc))
             return {}
@@ -336,7 +357,7 @@ class ExperimentManager:
 
     def _preflight(self):
         gait, received = self._latest_gait()
-        if gait is None or time.monotonic() - received > 2.0:
+        if gait is None or monotonic() - received > 2.0:
             raise RuntimeError("fresh GaitState unavailable")
         if gait.controller_state not in {"DISARMED", "HOLDING"}:
             raise RuntimeError(
@@ -345,18 +366,19 @@ class ExperimentManager:
             raise RuntimeError("controller configuration invalid: " + gait.configuration_error)
         if gait.backend not in {"mock", "dynamixel"}:
             raise RuntimeError("unsupported controller backend: " + gait.backend)
-        bag_root = Path(self.parameters["bag_root"]).expanduser().resolve()
-        bag_root.mkdir(parents=True, exist_ok=True)
-        if not bag_root.is_dir() or not os.access(str(bag_root), os.W_OK):
+        bag_root = os.path.abspath(
+            os.path.expanduser(str(self.parameters["bag_root"])))
+        makedirs(bag_root)
+        if not os.path.isdir(bag_root) or not os.access(bag_root, os.W_OK):
             raise RuntimeError("bag_root is not writable")
-        free_mb = shutil.disk_usage(str(bag_root)).free / (1024 * 1024)
+        free_mb = disk_free_mb(bag_root)
         if free_mb < int(self.parameters["min_free_disk_mb"]):
             raise RuntimeError("insufficient free disk: {0:.1f} MiB".format(free_mb))
         self._check_topic_types()
         for key in ("command", "telemetry"):
             with self._lock:
                 received = self._received_at[key]
-            if received == 0.0 or time.monotonic() - received > 2.0:
+            if received == 0.0 or monotonic() - received > 2.0:
                 raise RuntimeError("fresh {0} stream unavailable".format(key))
         return gait, bag_root
 
@@ -368,10 +390,12 @@ class ExperimentManager:
             self._state["bag_relative_path"] = ""
         self._set_state("STARTING", True, False, "")
         gait, bag_root = self._preflight()
-        run_dir = bag_root / run_id
-        run_dir.mkdir(parents=False, exist_ok=False)
-        bag_path = run_dir / "bag.bag"
-        if bag_path.exists():
+        run_dir = os.path.join(bag_root, run_id)
+        if os.path.exists(run_dir):
+            raise RuntimeError("run directory already exists")
+        makedirs(run_dir)
+        bag_path = os.path.join(run_dir, "bag.bag")
+        if os.path.exists(bag_path):
             raise RuntimeError("bag output already exists")
         relative = self._relative_bag_path(bag_path)
         with self._lock:
@@ -381,26 +405,28 @@ class ExperimentManager:
             run_id, gait.backend, self.parameters, relative, self._now_ns(),
             gait.active_config_revision,
         )
-        self._session_path = run_dir / "session.json"
+        self._session_path = os.path.join(run_dir, "session.json")
         self._run_dir = run_dir
         self._active = True
         self._write_session()
         self._publish_state()
 
         baseline = self._subscriber_counts()
-        recorder_log = (run_dir / "recorder.log").open("wb")
+        recorder_log = open(os.path.join(run_dir, "recorder.log"), "wb")
+        null = devnull()
         try:
             self._recorder = subprocess.Popen(
                 make_recorder_argv(bag_path),
-                stdin=subprocess.DEVNULL,
+                stdin=null,
                 stdout=recorder_log,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
                 close_fds=True,
+                **popen_session_kwargs()
             )
         finally:
+            null.close()
             recorder_log.close()
-        started = time.monotonic()
+        started = monotonic()
         self._wait_recorder_ready(baseline, started)
         accepted = self._get_complete_parameter_snapshot()
         self._session["accepted_parameters"] = accepted
@@ -419,18 +445,18 @@ class ExperimentManager:
         if gait.controller_state == "DISARMED":
             self._call_trigger("arm")
             self._wait_controller(
-                {"HOLDING"}, time.monotonic(), self.parameters["stop_timeout_s"])
+                {"HOLDING"}, monotonic(), self.parameters["stop_timeout_s"])
         elif gait.controller_state != "HOLDING":
             raise RuntimeError("controller left safe start state before arm")
         self._recording_delay(0.0)
         self._call_trigger("start")
-        self._wait_controller({"RUNNING"}, time.monotonic(), self.parameters["stop_timeout_s"])
+        self._wait_controller({"RUNNING"}, monotonic(), self.parameters["stop_timeout_s"])
         self._set_state("RUNNING", False, True)
 
     def _wait_recorder_ready(self, baseline, started):
         timeout = float(self.parameters["recorder_start_timeout_s"])
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = monotonic() + timeout
+        while monotonic() < deadline:
             self._check_recorder()
             counts = self._subscriber_counts()
             subscriptions_ready = all(
@@ -438,7 +464,7 @@ class ExperimentManager:
             with self._lock:
                 received = dict(self._received_at)
             fresh = all(
-                received[key] >= started and time.monotonic() - received[key] < 1.0
+                received[key] >= started and monotonic() - received[key] < 1.0
                 for key in ("gait", "command", "telemetry")
             )
             if subscriptions_ready and fresh:
@@ -457,11 +483,11 @@ class ExperimentManager:
             raise RuntimeError("controller entered " + gait.controller_state)
 
     def _recording_delay(self, duration_s):
-        deadline = time.monotonic() + max(0.0, duration_s)
+        deadline = monotonic() + max(0.0, duration_s)
         while True:
             if self._recorder is not None and self._recorder.poll() is None:
                 self._check_recorder()
-            remaining = deadline - time.monotonic()
+            remaining = deadline - monotonic()
             if remaining <= 0.0:
                 return
             time.sleep(min(0.05, remaining))
@@ -470,9 +496,12 @@ class ExperimentManager:
         client = self.trigger_clients[name]
         timeout_s = float(self.parameters["stop_timeout_s"])
         try:
-            if not client.wait_for_service(timeout=min(1.0, timeout_s)):
-                raise RuntimeError("service unavailable: /fish/controller/" + name)
-            response = client(self._trigger_type.Request())
+            client.wait_for_service(timeout=min(1.0, timeout_s))
+        except self._rospy.ROSException as exc:
+            raise RuntimeError(
+                "service unavailable: /fish/controller/{0}: {1}".format(name, exc))
+        try:
+            response = client(self._trigger_request_type())
         except self._rospy.ServiceException as exc:
             raise RuntimeError("service call failed: {0}: {1}".format(name, exc))
         if not response.success:
@@ -481,8 +510,8 @@ class ExperimentManager:
         return response
 
     def _wait_controller(self, expected, after, timeout_s):
-        deadline = time.monotonic() + float(timeout_s)
-        while time.monotonic() < deadline:
+        deadline = monotonic() + float(timeout_s)
+        while monotonic() < deadline:
             gait, received = self._latest_gait()
             if gait is not None and received >= after:
                 if gait.controller_state in expected:
@@ -522,7 +551,7 @@ class ExperimentManager:
         controller_fault = gait is not None and gait.controller_state in FAULT_STATES
         hold_confirmed = False
         if gait is not None and gait.controller_state != "DISARMED" and not controller_fault:
-            requested_at = time.monotonic()
+            requested_at = monotonic()
             try:
                 self._call_trigger("stop_hold")
                 self._wait_controller(
@@ -548,6 +577,8 @@ class ExperimentManager:
         self._session["termination_signals"] = termination_signals
         if exit_code != 0:
             errors.append("recorder exit code is {0}".format(exit_code))
+
+        self._wait_bag_file()
 
         from .bag_audit import audit_run
 
@@ -601,30 +632,54 @@ class ExperimentManager:
             try:
                 os.killpg(process.pid, signal.SIGINT)
                 signals.append("SIGINT")
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                errors.append("recorder SIGINT finalize timeout")
-            except ProcessLookupError:
+            except OSError:
                 pass
+            if not wait_process(process, timeout):
+                errors.append("recorder SIGINT finalize timeout")
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
                 signals.append("SIGTERM")
-                process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                errors.append("recorder SIGTERM timeout")
-            except ProcessLookupError:
+            except OSError:
                 pass
+            if not wait_process(process, 2.0):
+                errors.append("recorder SIGTERM timeout")
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
                 signals.append("SIGKILL")
-                process.wait(timeout=2.0)
-                errors.append("recorder required explicit SIGKILL after finalize timeouts")
-            except (subprocess.TimeoutExpired, ProcessLookupError) as exc:
-                errors.append("recorder could not be reaped: {0}".format(exc))
+            except OSError:
+                pass
+            if not wait_process(process, 2.0):
+                errors.append("recorder could not be reaped after SIGKILL")
+            else:
+                errors.append(
+                    "recorder required explicit SIGKILL after finalize timeouts")
         code = process.poll()
         return code if code is not None else "NOT_FINALIZED", signals, errors
+
+    def _wait_bag_file(self):
+        """Wait until rosbag has created and finalized its output file."""
+        bag_path = os.path.join(self._run_dir, "bag.bag")
+        timeout = float(self.parameters["finalize_timeout_s"])
+        deadline = monotonic() + timeout
+        last_size = -1
+        stable_since = None
+        while monotonic() < deadline:
+            try:
+                size = os.path.getsize(bag_path) if os.path.isfile(bag_path) else -1
+            except OSError:
+                size = -1
+            if size > 0 and size == last_size:
+                if stable_since is None:
+                    stable_since = monotonic()
+                elif monotonic() - stable_since >= 0.5:
+                    return True
+            else:
+                stable_since = None
+            last_size = size
+            time.sleep(0.05)
+        return os.path.isfile(bag_path)
 
     def _heartbeat(self, _event=None):
         with self._lock:
@@ -675,8 +730,8 @@ class ExperimentManager:
             + float(self.parameters["tail_s"])
             + 8.0
         )
-        deadline = time.monotonic() + timeout
-        while not self._shutdown_done.is_set() and time.monotonic() < deadline:
+        deadline = monotonic() + timeout
+        while not self._shutdown_done.is_set() and monotonic() < deadline:
             time.sleep(0.05)
         self._stop_event.set()
         self.worker.join(timeout=2.0)

@@ -17,5 +17,5 @@
   <depend>diagnostic_msgs</depend>
   <depend>fish_interfaces</depend>
 
-  <test_depend>python3-nose</test_depend>
+  <test_depend>python-nose</test_depend>
 </package>

@@ -1,7 +1,6 @@
-import math
-import tempfile
 import unittest
 
+from fish_tools._compat import TemporaryDirectory
 from fish_tools.bag_audit import (
     REQUIRED_TOPICS,
     audit_run,
@@ -34,7 +33,7 @@ class TopicContractTest(unittest.TestCase):
             for failure in topic_contract_failures(entries, missing)))
 
     def test_missing_session_file_is_a_real_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory:
             report = audit_run(directory)
         self.assertFalse(report["valid"])
         self.assertTrue(report["validation"]["failures"])
@@ -67,8 +66,8 @@ class TelemetryContractTest(unittest.TestCase):
             },
             {
                 "valid": [False, True, True, True],
-                "position_rad": [99.0, math.nan, 0.3, 0.4],
-                "current_a": [99.0, 0.1, math.inf, -0.1],
+                "position_rad": [99.0, float("nan"), 0.3, 0.4],
+                "current_a": [99.0, 0.1, float("inf"), -0.1],
             },
         ]
         result = count_valid_motor_samples(records)

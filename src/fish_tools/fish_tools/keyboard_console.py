@@ -1,11 +1,20 @@
 """TTY-only single-key console for ROS 1; pure key decisions stay ROS-free."""
 
+from __future__ import print_function
+
 import os
 import select
 import sys
 import termios
 import time
 import tty
+
+from ._compat import monotonic
+
+
+def _print(message):
+    print(message)
+    sys.stdout.flush()
 
 
 START_STATES = {"IDLE", "HOLDING"}
@@ -47,11 +56,12 @@ class KeyboardNode:
     def __init__(self):
         import rospy
         from fish_interfaces.msg import ExperimentState
-        from std_srvs.srv import SetBool, Trigger
+        from std_srvs.srv import (SetBool, SetBoolRequest, Trigger,
+                                  TriggerRequest)
 
         self._rospy = rospy
-        self._set_bool_type = SetBool
-        self._trigger_type = Trigger
+        self._set_bool_request_type = SetBoolRequest
+        self._trigger_request_type = TriggerRequest
         self.latest = None
         self._last_printed = None
         self.subscription = rospy.Subscriber(
@@ -71,49 +81,50 @@ class KeyboardNode:
         )
         if summary != self._last_printed:
             self._last_printed = summary
-            print(
+            _print(
                 "state={0} controller={1} recorder_ready={2} run={3} {4}".format(
                     message.state,
                     message.controller_state or "UNKNOWN",
                     message.recorder_ready,
                     message.run_id or "-",
                     message.last_error,
-                ),
-                flush=True,
+                )
             )
 
     def spin_for_initial_state(self, timeout_s=3.0):
-        deadline = time.monotonic() + timeout_s
-        while self.latest is None and time.monotonic() < deadline:
+        deadline = monotonic() + timeout_s
+        while self.latest is None and monotonic() < deadline:
             time.sleep(0.05)
         return self.latest is not None
 
     def _call(self, client, request, timeout_s, label):
         try:
-            if not client.wait_for_service(timeout=min(1.0, timeout_s)):
-                print("service unavailable: {0}".format(label), flush=True)
-                return None
+            client.wait_for_service(timeout=min(1.0, timeout_s))
+        except self._rospy.ROSException as exc:
+            _print("service unavailable: {0} ({1})".format(label, exc))
+            return None
+        try:
             return client(request)
         except self._rospy.ServiceException as exc:
-            print("service call failed: {0}".format(exc), flush=True)
+            _print("service call failed: {0}".format(exc))
             return None
 
     def request_running(self, target):
-        request = self._set_bool_type.Request()
+        request = self._set_bool_request_type()
         request.data = target
         response = self._call(
             self.set_running_client, request, 5.0, "/fish/experiment/set_running")
         if response is not None:
-            print("set_running({0}): {1} {2}".format(
-                target, response.success, response.message), flush=True)
+            _print("set_running({0}): {1} {2}".format(
+                target, response.success, response.message))
         return response
 
     def request_estop(self):
         response = self._call(
-            self.estop_client, self._trigger_type.Request(), 3.0,
+            self.estop_client, self._trigger_request_type(), 3.0,
             "/fish/controller/estop")
         if response is not None:
-            print("estop: {0} {1}".format(response.success, response.message), flush=True)
+            _print("estop: {0} {1}".format(response.success, response.message))
         return response
 
     def normal_stop_before_exit(self, timeout_s=30.0):
@@ -122,14 +133,14 @@ class KeyboardNode:
         response = self.request_running(False)
         if response is None or not response.success:
             return False
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
+        deadline = monotonic() + timeout_s
+        while monotonic() < deadline:
             time.sleep(0.05)
             if self.latest is not None and stop_wait_complete(
                 self.latest.state, self.latest.transition_in_progress
             ):
                 return self.latest.state in {"HOLDING", "IDLE"}
-        print("bounded stop wait expired; controller is left running", flush=True)
+        _print("bounded stop wait expired; controller is left running")
         return False
 
     def close(self):
@@ -142,6 +153,7 @@ class KeyboardNode:
 def run_console():
     if not sys.stdin.isatty():
         print("keyboard_console requires an interactive TTY", file=sys.stderr)
+        sys.stderr.flush()
         return 2
 
     import rospy
@@ -154,7 +166,7 @@ def run_console():
         rospy.init_node("keyboard_console")
         keyboard = KeyboardNode()
         tty.setcbreak(fd)
-        print("space=start/stop  e=estop  q=quit (short presses only)", flush=True)
+        _print("space=start/stop  e=estop  q=quit (short presses only)")
         keyboard.spin_for_initial_state()
         gate = SpaceDebouncer()
         quitting = False
@@ -167,8 +179,9 @@ def run_console():
             if not data:
                 quitting = True
                 break
-            for value in data:
-                char = chr(value)
+            if not isinstance(data, str):
+                data = data.decode("utf-8", "ignore")
+            for char in data:
                 if char in ("q", "\x04", "\x03"):
                     quitting = True
                     break
@@ -179,15 +192,14 @@ def run_console():
                     continue
                 state = keyboard.latest
                 if state is None:
-                    print("waiting for ExperimentState; key ignored", flush=True)
+                    _print("waiting for ExperimentState; key ignored")
                     continue
                 target = gate.accept(
-                    state.state, state.transition_in_progress, time.monotonic())
+                    state.state, state.transition_in_progress, monotonic())
                 if target is None:
-                    now = time.monotonic()
+                    now = monotonic()
                     if now - last_busy_notice >= 0.5:
-                        print("key ignored (busy, debounce, or non-startable state)",
-                              flush=True)
+                        _print("key ignored (busy, debounce, or non-startable state)")
                         last_busy_notice = now
                     continue
                 keyboard.request_running(target)

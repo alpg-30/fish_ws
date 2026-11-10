@@ -1,7 +1,9 @@
-# fish_ws — ROS 1 Noetic 四电机扑动控制
+# fish_ws — ROS 1 四电机扑动控制（Melodic / Noetic）
 
-目标运行环境：**Jetson Orin Nano + Ubuntu 20.04 + ROS 1 Noetic**。
-无电机 SDK 时可用 `backend=mock` 完整跑通波形、单键联动与录包；实机后端直接编译仓库内
+实测运行环境：**Jetson Nano 4GB + Ubuntu 18.04 + ROS 1 Melodic + Python 2.7**。
+`fish_tools` 的 Python 代码保持 2/3 双兼容；若在 Noetic（Python 3）上运行，需要把
+`src/fish_tools/scripts/*.py` 的 shebang 从 `python2` 改为 `python3`。
+无电机 SDK 时可用 `backend=mock` 完整跑通波形、单键联动、录包与审计；实机后端直接编译仓库内
 DynamixelSDK 的 C++ 子集。
 
 ## 包
@@ -16,22 +18,35 @@ DynamixelSDK 的 C++ 子集。
 ## 构建与测试
 
 ```bash
-cd 03_hardware/fish_ws
+cd <fish_ws 工作区根目录>
 catkin_make
 source devel/setup.bash
 ```
 
-- Python 测试：`catkin_make run_tests`
+- Python 单元测试（Melodic / Python 2.7）：
+
+  ```bash
+  python2 -m unittest discover -s src/fish_tools/test -p 'test_*.py' -v
+  ```
+
+- ROS 端到端测试（会启动 `roslaunch`，约 30 秒）：
+
+  ```bash
+  FISH_RUN_ROS_TESTS=1 python2 -m unittest discover -s src/fish_tools/test \
+    -p 'test_recording.py' -v
+  ```
+
 - C++ 纯逻辑测试：`cd build/fish_control && ctest --output-on-failure`
 
-当前实现未在装好 Noetic 的机器上执行过上述命令，请以实际构建输出为准。
+以上 mock 全流程已在 Jetson Nano 4GB / Ubuntu 18.04 / Melodic / Python 2.7 上实际验证；
+实机链路仍需按下面的标定步骤在硬件上确认。
 
 ## 运行
 
 mock（默认）：
 
 ```bash
-cd 03_hardware/fish_ws
+cd <fish_ws 工作区根目录>
 source devel/setup.bash
 roslaunch fish_bringup fish.launch
 ```
@@ -60,7 +75,7 @@ roslaunch fish_bringup fish.launch \
 另开一个终端运行键盘（需要交互式 TTY）：
 
 ```bash
-cd 03_hardware/fish_ws
+cd <fish_ws 工作区根目录>
 source devel/setup.bash
 rosrun fish_tools keyboard_console.py
 ```
@@ -105,3 +120,4 @@ rosrun fish_tools bag_audit.py bags/<run_id>
 - mock 角度/电流是模拟值，`backend=mock`；不能当作实机实测数据。
 - Fluent 时间相位与空间模型波形可独立核对；几何到关节角的实机映射未标定，`mapping/kind` 仅支持 `mock_linear`（mock）或 `linear_calibrated`（实机）。
 - 实机后端已接入 DynamixelSDK，但四电机 ID/方位、机械零位、限位与安全阈值仍需按实机标定；未标定时 `calibration/confirmed` 保持 `false`。
+- `fish_tools` 已适配 Melodic 的 Python 2.7 rospy：录包使用进程组 SIGINT 后等待 bag 文件落盘，服务调用区分 `wait_for_service` 的返回值为 `None` 的成功语义。

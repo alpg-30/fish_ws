@@ -304,7 +304,9 @@ private:
         (!expected_run_id.empty() && last_experiment_.run_id != expected_run_id)) {
       return false;
     }
-    const double age = static_cast<double>(now_ns - last_experiment_ns_) * 1e-9;
+    const double age =
+      (static_cast<double>(now_ns) - static_cast<double>(last_experiment_ns_)) * 1e-9;
+    // 回调可能在本周期 now_ns 之后更新；负 age 表示消息比周期起点更新，仍是新鲜的。
     return age <= kRecorderTimeoutS;
   }
 
@@ -553,7 +555,9 @@ private:
       }
     }
     const double age =
-      static_cast<double>(now_ns - last_motor_state_.host_steady_time_ns) * 1e-9;
+      (static_cast<double>(now_ns) -
+       static_cast<double>(last_motor_state_.host_steady_time_ns)) * 1e-9;
+    // 反馈在本周期 now_ns 之后采样时 age 为负，表示刚采到，不是过期。
     return age <= active_config_.feedback_timeout_s;
   }
 

@@ -2,10 +2,10 @@
 
 import argparse
 import json
-import math
-import subprocess
+import os
 import sys
-from pathlib import Path
+
+from ._compat import CommandTimeout, isfinite, open_text, run_command, text_type
 
 
 REQUIRED_TOPICS = {
@@ -84,9 +84,9 @@ def count_valid_motor_samples(records):
         for index in range(4):
             if not valid[index]:
                 continue
-            if math.isfinite(float(positions[index])):
+            if isfinite(float(positions[index])):
                 angles[index] += 1
-            if math.isfinite(float(current_values[index])):
+            if isfinite(float(current_values[index])):
                 currents[index] += 1
     return {
         "per_motor_valid_angle_samples": angles,
@@ -151,43 +151,38 @@ def _add_failure(validation, message):
 
 
 def _resolve_session(input_path):
-    path = Path(input_path).expanduser().resolve()
-    session_path = path / "session.json" if path.is_dir() else path
-    with session_path.open("r", encoding="utf-8") as stream:
+    path = os.path.abspath(os.path.expanduser(str(input_path)))
+    session_path = os.path.join(path, "session.json") if os.path.isdir(path) else path
+    with open_text(session_path, "r") as stream:
         session = json.load(stream)
-    run_dir = session_path.parent
-    bag_path = run_dir / "bag.bag"
-    if not bag_path.exists():
-        configured = Path(session.get("bag_relative_path", ""))
-        if configured.is_absolute():
+    run_dir = os.path.dirname(session_path)
+    bag_path = os.path.join(run_dir, "bag.bag")
+    if not os.path.exists(bag_path):
+        configured = session.get("bag_relative_path", "")
+        if os.path.isabs(configured):
             bag_path = configured
         else:
-            candidate = (Path.cwd() / configured).resolve()
-            if candidate.exists():
+            candidate = os.path.abspath(os.path.join(os.getcwd(), configured))
+            if os.path.exists(candidate):
                 bag_path = candidate
-    return session_path, session, bag_path.resolve()
+    return session_path, session, os.path.abspath(bag_path)
 
 
 def _run_bag_info(bag_path, timeout_s, validation):
     try:
-        completed = subprocess.run(
-            ["rosbag", "info", str(bag_path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        returncode, stdout, stderr = run_command(
+            ["rosbag", "info", str(bag_path)], timeout_s)
+    except (OSError, IOError, CommandTimeout) as exc:
         _add_failure(validation, "rosbag info failed: {0}".format(exc))
         return {"returncode": None, "stdout": "", "stderr": str(exc)}
     result = {
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
     }
-    validation["metadata_readable"] = completed.returncode == 0
-    if completed.returncode != 0:
-        _add_failure(validation, "rosbag info returned {0}".format(completed.returncode))
+    validation["metadata_readable"] = returncode == 0
+    if returncode != 0:
+        _add_failure(validation, "rosbag info returned {0}".format(returncode))
     return result
 
 
@@ -332,7 +327,7 @@ def audit_run(input_path, info_timeout_s=30.0):
     validation = empty_validation()
     try:
         session_path, session, bag_path = _resolve_session(input_path)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except (OSError, IOError, ValueError, TypeError) as exc:
         _add_failure(validation, "cannot load session: {0}".format(exc))
         return {
             "valid": False,
@@ -357,9 +352,9 @@ def audit_run(input_path, info_timeout_s=30.0):
     if not session.get("run_id"):
         _add_failure(validation, "session run_id is empty")
     for field in ("software_revision", "fluent_reference_revision_or_digest"):
-        if not isinstance(session.get(field), str) or not session.get(field):
+        if not isinstance(session.get(field), text_type) or not session.get(field):
             _add_failure(validation, "session revision field missing: " + field)
-    if not bag_path.is_file():
+    if not os.path.isfile(bag_path):
         _add_failure(validation, "bag file missing: {0}".format(bag_path))
         return report
     report["bag_info"] = _run_bag_info(bag_path, info_timeout_s, validation)
