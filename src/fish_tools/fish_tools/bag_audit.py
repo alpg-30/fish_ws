@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Offline ROS 1 rosbag auditing without import-time ROS dependencies."""
 
 import argparse
