@@ -70,21 +70,9 @@ fish_control::Config make_config(const Combo& combo) {
   config.body_coeff = combo.body_coeff;
   config.tf_coeff = combo.tf_coeff;
   config.x_model = {0.0, 0.12, 0.24, 0.36};
-  config.z_model = {0.20, -0.20, 0.25, -0.25};
   config.mapping_gain = {1.0, 1.0, 1.0, 1.0};
   config.mapping_offset = {0.0, 0.0, 0.0, 0.0};
   return config;
-}
-
-double shape(std::size_t index, const fish_control::Config& config) {
-  const double z = config.z_model[index];
-  if (z > 0.1) {
-    return (z - 0.1) / 0.5;
-  }
-  if (z < -0.1) {
-    return (-0.1 - z) / 0.5;
-  }
-  return 0.0;
 }
 
 double spatial_delay(std::size_t index, const fish_control::Config& config) {
@@ -102,7 +90,7 @@ void write_waveform_csv(const std::filesystem::path& path, const Combo& combo,
       << " frequency_hz=" << combo.frequency_hz << " body_coeff=" << combo.body_coeff
       << " tf_coeff=" << combo.tf_coeff << '\n';
   out << "# source=" << combo.source
-      << " geometry=x[0,0.12,0.24,0.36] z[0.20,-0.20,0.25,-0.25] mapping=mock_linear(gain=1,offset=0)\n";
+      << " geometry=x[0,0.12,0.24,0.36] mapping=mock_linear(gain=1,offset=0)\n";
   out << "time_s,phase_rad,phase_rate_rad_s";
   for (int i = 0; i < 4; ++i) out << ",displacement_" << i;
   for (int i = 0; i < 4; ++i) out << ",wave_" << i;
@@ -126,11 +114,17 @@ void write_waveform_csv(const std::filesystem::path& path, const Combo& combo,
 double downstroke_fraction(const fish_control::Config& config, std::size_t index) {
   const double period = 1.0 / config.frequency_hz;
   const double dt = period / kSamplesPerCycle;
+  double max_delay = 0.0;
+  for (std::size_t i = 0; i < fish_control::kMotorCount; ++i) {
+    const double psi = config.x_model[i] * config.body_coeff * 2.0 * kPi / 0.55;
+    max_delay = std::max(max_delay, psi / (2.0 * kPi) / config.frequency_hz);
+  }
   int down = 0;
   int up = 0;
-  double previous = fish_control::evaluate_waveform(0.0, config).model_displacement[index];
+  double previous = fish_control::evaluate_waveform(max_delay, config)
+    .model_displacement[index];
   for (int step = 1; step <= kSamplesPerCycle * kCycles; ++step) {
-    const auto sample = fish_control::evaluate_waveform(step * dt, config);
+    const auto sample = fish_control::evaluate_waveform(max_delay + step * dt, config);
     const double current = sample.model_displacement[index];
     if (current < previous) {
       ++down;
@@ -150,15 +144,20 @@ bool switches_at_extrema(const fish_control::Config& config, std::size_t index) 
   const double delay = spatial_delay(index, config);
   const int samples = kSamplesPerCycle * kCycles;
   const double dt = period / kSamplesPerCycle;
+  double max_delay = 0.0;
+  for (std::size_t i = 0; i < fish_control::kMotorCount; ++i) {
+    const double psi = config.x_model[i] * config.body_coeff * 2.0 * kPi / 0.55;
+    max_delay = std::max(max_delay, psi / (2.0 * kPi) / config.frequency_hz);
+  }
   std::vector<double> values(samples + 1);
   for (int step = 0; step <= samples; ++step) {
-    values[step] = fish_control::evaluate_waveform(step * dt, config)
+    values[step] = fish_control::evaluate_waveform(max_delay + step * dt, config)
       .model_displacement[index];
   }
   std::vector<double> extrema;
   for (int step = 1; step < samples; ++step) {
     if ((values[step] - values[step - 1]) * (values[step + 1] - values[step]) < 0.0) {
-      extrema.push_back(step * dt);
+      extrema.push_back(max_delay + step * dt);
     }
   }
   for (double base : {t1, t2}) {
@@ -204,7 +203,7 @@ void check_combo(const Combo& combo, const fish_control::Config& config) {
   require(std::abs(late.phase_rate_rad_s - fast_rate) < 1e-9, std::string(combo.tag) + " tail rate");
 
   for (std::size_t i = 0; i < fish_control::kMotorCount; ++i) {
-    const double envelope = std::abs(shape(i, config) * combo.amplitude_model);
+    const double envelope = std::abs(combo.amplitude_model);
     double peak = 0.0;
     for (int step = 0; step <= kSamplesPerCycle * kCycles; ++step) {
       const double time_s = period * kCycles * step / (kSamplesPerCycle * kCycles);
@@ -263,7 +262,7 @@ int main(int argc, char** argv) {
       summary << ',' << spatial_delay(i, config);
     }
     for (std::size_t i = 0; i < fish_control::kMotorCount; ++i) {
-      summary << ',' << std::abs(shape(i, config) * combo.amplitude_model);
+      summary << ',' << std::abs(combo.amplitude_model);
     }
     summary << ',' << combo.source << '\n';
     std::cout << "[PASS] " << combo.tag << " phase/rate/envelope/duty checks\n";

@@ -26,18 +26,17 @@ int main() {
   c.amplitude_model = 0.8;
   c.body_coeff = 0.5;
   c.x_model = {0.1375, 0.1375, 0.1375, 0.1375};
-  c.z_model = {0.35, -0.35, 0.0, 0.1};
   c.mapping_gain = {2.0, 2.0, 2.0, 2.0};
   c.mapping_offset = {0.1, 0.1, 0.1, 0.1};
   const auto sample = fish_control::evaluate_model_waveform(kPi / 2.0, 3.0, c);
   near(sample.spatial_phase_rad[0], kPi / 4.0);
   near(sample.wave_value[0], -std::sqrt(0.5));
   check(sample.wave_value[0] < 0.0, "spatial term must be sin(psi - phi)");
-  near(sample.model_displacement[0], -0.282842712474619);
-  near(sample.model_displacement[1], -0.282842712474619);
-  near(sample.model_displacement[2], 0.0);
-  near(sample.model_displacement[3], 0.0);
-  near(sample.ideal_joint_target_rad[0], 0.1 - 2.0 * 0.282842712474619);
+  near(sample.model_displacement[0], -0.5656854249492380);
+  near(sample.model_displacement[1], -0.5656854249492380);
+  near(sample.model_displacement[2], -0.5656854249492380);
+  near(sample.model_displacement[3], -0.5656854249492380);
+  near(sample.ideal_joint_target_rad[0], 0.1 - 2.0 * 0.5656854249492380);
   check(sample.mapping_valid, "mock mapping valid");
 
   fish_control::Config raw_config;

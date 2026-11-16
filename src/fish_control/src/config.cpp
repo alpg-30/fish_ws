@@ -1,5 +1,6 @@
 #include "fish_control/config.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -45,7 +46,7 @@ bool same_structure(const Config& a, const Config& b) {
   return a.backend == b.backend && a.control_hz == b.control_hz &&
          a.telemetry_hz == b.telemetry_hz && a.motor_names == b.motor_names &&
          a.motor_ids == b.motor_ids && a.waveform == b.waveform &&
-         a.x_model == b.x_model && a.z_model == b.z_model &&
+         a.x_model == b.x_model &&
          a.model_unit == b.model_unit && a.mapping_kind == b.mapping_kind &&
          a.mapping_gain == b.mapping_gain && a.mapping_offset == b.mapping_offset &&
          a.zero_raw == b.zero_raw && a.direction == b.direction &&
@@ -124,8 +125,8 @@ ValidationResult validate_config(const Config& c) {
       c.tf_coeff <= 0.0 || c.tf_coeff >= 1.0 || !finite(c.body_coeff)) {
     return reject("invalid gait scalar parameter");
   }
-  if (!finite_vector(c.x_model) || !finite_vector(c.z_model) || c.model_unit.empty()) {
-    return reject("geometry arrays must have four finite values and model_unit must be set");
+  if (!finite_vector(c.x_model) || c.model_unit.empty()) {
+    return reject("geometry x_model must have four finite values and model_unit must be set");
   }
   if (c.mapping_kind != "mock_linear" && c.mapping_kind != "linear_calibrated") {
     return reject("mapping.kind must be mock_linear or linear_calibrated");
@@ -164,9 +165,11 @@ ValidationResult validate_config(const Config& c) {
   }
   if (c.backend == "dynamixel") {
     for (std::size_t i = 0; i < kMotorCount; ++i) {
-      const std::int32_t low = joint_to_raw(c.min_rad[i], i, c);
-      const std::int32_t high = joint_to_raw(c.max_rad[i], i, c);
-      if (low < 0 || high > 4095 || low > high) {
+      const std::int32_t raw_a = joint_to_raw(c.min_rad[i], i, c);
+      const std::int32_t raw_b = joint_to_raw(c.max_rad[i], i, c);
+      const std::int32_t low = std::min(raw_a, raw_b);
+      const std::int32_t high = std::max(raw_a, raw_b);
+      if (low < 0 || high > 4095) {
         return reject("joint limits must map inside the 0..4095 single-turn range");
       }
     }

@@ -1,5 +1,5 @@
 # 实机配置模板：DYNAMIXEL XW430-T200（IP68 防水，RS485，Protocol 2.0）。
-# 目标运行环境为 Jetson Orin Nano + Ubuntu 20.04 + ROS 1 Noetic；
+# 实测运行环境为 Jetson Nano 4GB + Ubuntu 18.04 + ROS 1 Melodic；
 # 端口与权限在这台 SoC 上配置，与开发机无关。
 # 使用前必须确认：
 #   1. 舵机已设为 Position Control Mode，ID 与 motors/ids 一致；
@@ -16,38 +16,46 @@ timing:
   telemetry_hz: 50.0
 
 motors:
+  # 实机方位：1=左上，2=右上，3=左下，4=右下。
   names: [fin_0, fin_1, fin_2, fin_3]
   ids: [1, 2, 3, 4]
 
 gait:
   waveform: fluent_asymmetric_delayed
-  amplitude_model: 0.05
+  amplitude_model: 0.20
   frequency_hz: 0.5
   tf_coeff: 0.65
   body_coeff: 0.5
 
 geometry:
-  x_model: [0.0, 0.12, 0.24, 0.36]
-  z_model: [0.20, -0.20, 0.25, -0.25]
+  # 只保留前后两组安装位置：ID1/2 为前电机 x=0，ID3/4 为后电机 x=0.30。
+  # 真机体长 550 mm 与 UDF 的 0.55 m 一致，前后摆轴中心距 d=300 mm 可直接作为模型坐标。
+  x_model: [0.0, 0.0, 0.30, 0.30]
   model_unit: fluent_model_unit
 
 mapping:
   kind: linear_calibrated
-  # TODO 标定后替换：模型位移到关节角的增益和零位。
-  gain_rad_per_model_unit: [0.0, 0.0, 0.0, 0.0]
+  # A_max=0.20，R_front=420 mm：θ_max=asin(0.20/0.42)=28.437°，gain=2.4816。
+  # 后电机复用前电机摆角波形，仅相位滞后 98.2°；后摆杆 210 mm 只影响端点位移。
+  gain_rad_per_model_unit: [2.4816, 2.4816, 2.4816, 2.4816]
   offset_rad: [0.0, 0.0, 0.0, 0.0]
 
 calibration:
-  # TODO 标定后替换：中位 raw、方向、外部传动比（不含舵机内置减速比）。
-  zero_raw: [2048, 2048, 2048, 2048]
-  direction: [1, 1, 1, 1]
+  # 绝对中点标定：ID1/ID2 取 180°→2048 counts，ID3/ID4 取 120°→1365 counts。
+  # 1=左上，2=右上，3=左下，4=右下。
+  zero_raw: [2048, 2048, 1365, 1365]
+  # 下扑为正：ID1/ID4 raw 增大，ID2/ID3 raw 减小。
+  direction: [1, -1, -1, 1]
   external_ratio: [1.0, 1.0, 1.0, 1.0]
-  confirmed: false
+  # 已完成零点、力臂与摆角标定，允许 arm/start。
+  confirmed: true
 
-# TODO 按机械行程与实测安全值替换。
+# 平放=0，上=-π/2，下=+π/2；当前四台波形峰值均为 28.44°，位于 ±90° 限位内。
+# A_max 与前电机力臂决定摆幅 θ_max = asin(A_max / R_front)；后电机复用同一摆角波形，
+# 仅相位滞后。软件限位取机械端点并留余量，不能直接等于波形峰值。
 limits:
-  min_rad: [-0.6, -0.6, -0.6, -0.6]
-  max_rad: [0.6, 0.6, 0.6, 0.6]
+  min_rad: [-1.5707963, -1.5707963, -1.5707963, -1.5707963]
+  max_rad: [1.5707963, 1.5707963, 1.5707963, 1.5707963]
   max_velocity_rad_s: [4.0, 4.0, 4.0, 4.0]
   max_acceleration_rad_s2: [20.0, 20.0, 20.0, 20.0]
   current_trip_a: [1.0, 1.0, 1.0, 1.0]
@@ -58,12 +66,15 @@ limits:
 
 safety:
   feedback_timeout_s: 0.2
-  bus_watchdog_ms: 200
+  # U2D2 一次同步读约 40~56 ms，200 ms 看门狗在 100 Hz 控制 + 50 Hz 遥测下会被
+  # 偶发 USB/调度停顿误触发（实测曾报 bus_write_watchdog）；放宽到 1000 ms。
+  bus_watchdog_ms: 1000
   normal_stop_policy: hold_position
   require_recording: true
 
 bus:
-  device: /dev/ttyUSB0
-  # 建议 1000000；若舵机仍为工厂默认 57600，请先改 EEPROM 并同步此处。
-  baudrate: 1000000
+  # U2D2 的稳定设备名，由 udev 规则 99-fish-u2d2.rules 绑定（序列号 FTA9DPMX）。
+  device: /dev/fish_u2d2
+  # 实测四台 XW430-T200 当前均为 115200；改 EEPROM 后同步此处。
+  baudrate: 115200
   protocol_version: 2.0

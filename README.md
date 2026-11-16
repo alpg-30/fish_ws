@@ -64,11 +64,12 @@ roslaunch fish_bringup fish.launch \
 仓库只跟踪 DynamixelSDK 的 `c++/include`、`c++/src`、`LICENSE` 与 `SDK_REVISION`
 （Apache-2.0）；`COLCON_IGNORE`/`CATKIN_IGNORE` 让构建系统跳过 SDK 内的 ROS 包，
 其它语言绑定、示例与构建目录不纳入 Git。
-串口设备名与权限只在 SoC 上配置，例如 U2D2 常见 `/dev/ttyUSB0`，CDC-ACM 适配器可能是 `/dev/ttyACM0`。
+串口设备名与权限只在 SoC 上配置。当前实机用 udev 规则把 U2D2 绑定为 `/dev/fish_u2d2`
+（FTDI 序列号 `FTA9DPMX`），`hardware.yaml` 已指向该稳定名称，避免重启后 `/dev/ttyUSB*` 编号变化。
 
 实机前提：
 
-- 舵机设为 Position Control Mode，ID 与 `motors/ids` 一致，`bus/baudrate` 与 EEPROM 设置一致（模板用 1 Mbps）。
+- 舵机设为 Position Control Mode，ID 与 `motors/ids` 一致，`bus/baudrate` 与 EEPROM 设置一致（当前实测 115200）。
 - 填写 `zero_raw`、`direction`、`external_ratio`、`mapping/*` 与 `limits/*` 后再把 `calibration/confirmed` 设为 `true`；否则 arm 会被拒绝。
 - 正常停止只保持位置、不卸载扭矩；关闭 controller 进程也不会自动卸扭矩，断电或显式 disarm 才会释放。
 
@@ -82,6 +83,20 @@ rosrun fish_tools keyboard_console.py
 
 - 空格：`IDLE/HOLDING` 开始（先启动录包，再 arm/start）；`RUNNING` 停止（先 `BRAKING` 减速、确认 `HOLDING`、录尾部数据，再关包）。
 - `e`：软件急停；`q`/EOF/Ctrl+C：正常停止后退出键盘，controller 继续保持位置与扭矩。
+
+单终端实机脚本 `src/fish_bringup/scripts/run_real.sh` 会一次性拉起 roscore、controller、
+experiment_manager，在 roslaunch 启动前开始录包，并在前台运行键盘控制：
+
+```bash
+cd <fish_ws 工作区根目录>
+./src/fish_bringup/scripts/run_real.sh
+```
+
+- 录包：`bags/launch_<时间戳>/bag.bag`，包含 `/fish/flapping_command`（摆角指令）、
+  `/fish/motor_telemetry`（真实位置反馈与实时电流）、`/fish/joint_states`、
+  `/fish/gait_state`、`/fish/experiment_state`、`/fish/diagnostics`。
+- 空格 start/stop，`e` 急停，`q` 退出；脚本退出时会先 `stop_hold` 再 `disarm` 卸载扭矩。
+- experiment_manager 仍会为每次实验单独生成 `bags/<run_id>/` 录包与审计记录。
 
 运行时调整动作参数（仅 `DISARMED`/`HOLDING`，整组原子校验，下一次 start 生效）：
 
@@ -105,6 +120,26 @@ rosrun fish_tools bag_audit.py bags/<run_id>
 - `gait/tf_coeff` 是**下扑（top→bottom）占周期比例**，上抬占 `1 - tf_coeff`。
 - `mock.yaml` 默认 `0.65`：下扑做功慢、上抬回位快。
 - Fluent 原始默认 `0.35`（`test_plot/output/data1_baseline.svg`）：下扑快、上抬慢，仅作对照。
+
+## 空间幅值与相位（实机模型）
+
+实机不再使用 UDF 的 z 向包络，四台鳍统一振幅，左右两对完全同相：
+
+- 模型位移：`displacement_i = A_max × sin(x_i × body_coeff × 2π / 0.55 − φ(t))`
+- ID1/ID2 为前电机 `x=0`，ID3/ID4 为后电机 `x=x_rear`，同组内波形完全一致。
+- 前后相位差：`Δφ = body_coeff × x_rear × 2π / 0.55`，时间延迟
+  `Δt = Δφ / (2π) × T = body_coeff × x_rear / 0.55 × T`。
+- 摆角：`θ_i = offset_i + gain_i × displacement_i`，峰值 `θ_max = gain × A_max`；
+  若按刚体鳍和舵机轴到鳍面参考点力臂 `R` 复现模型位移，则
+  `θ_max = asin(A_max / R)`，小角度下 `gain ≈ 1 / R`。
+- 当前实机：真机体长 550 mm 与 UDF 的 0.55 m 一致，前后摆轴中心距 `d=300 mm`，
+  因此 `x_rear=0.30`，`Δφ=98.2°`，`Δt=0.545 s`（@0.5 Hz）。
+- 当前实机力臂：`R_front=420 mm`、`A_max=0.20` → 前电机
+  `θ_max=asin(0.20/0.42)=28.44°`（gain 2.4816）。后电机不追 A_max 位移，
+  直接复用前电机摆角波形并滞后 98.2°；后摆杆 210 mm 对应端点位移
+  `0.21×sin(28.44°)≈100 mm`。
+- 启动行为：ID1/ID2 从 t=0 开始摆动；ID3/ID4 在自己的延迟（0.545 s）到达前
+  保持 0°，之后从相位 0 开始跟随，因此视觉上是前电机先动、后电机滞后起动。
 
 ## 波形模式
 

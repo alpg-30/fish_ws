@@ -12,7 +12,6 @@ float64 frequency_hz
 float64 tf_coeff
 float64 body_coeff
 float64[4] x_model
-float64[4] z_model
 string model_unit
 float64[4] hold_position_rad
 string fault_code

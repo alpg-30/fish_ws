@@ -118,6 +118,20 @@ int main() {
   candidate.min_rad = {-1.57, -1.57, -1.57, -1.57};
   rejected(candidate, "joint limits that wrap outside 0..4095 must be rejected");
 
+  candidate = current;
+  candidate.backend = "dynamixel";
+  candidate.mapping_kind = "linear_calibrated";
+  candidate.bus_device = "/dev/fish_u2d2";
+  candidate.bus_baudrate = 115200;
+  candidate.zero_raw = {977, 3104, 2462, 327};
+  candidate.direction = {1, -1, -1, 1};
+  candidate.external_ratio = {1.0, 1.0, 1.0, 1.0};
+  candidate.min_rad = {0.0, 0.0, 0.0, 0.0};
+  candidate.max_rad = {3.141592653589793, 3.141592653589793,
+                       3.141592653589793, 3.141592653589793};
+  check(fish_control::validate_config(candidate).valid,
+        "negative direction limits inside 0..4095 are accepted");
+
   std::cout << "[PASS] config validation and atomic transaction tests\n";
   return 0;
 }

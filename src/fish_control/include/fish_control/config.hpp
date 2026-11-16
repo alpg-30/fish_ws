@@ -38,8 +38,7 @@ struct Config {
   double tf_coeff{0.35};
   double body_coeff{0.5};
 
-  std::vector<double> x_model{-0.2, -0.05, 0.05, 0.2};
-  std::vector<double> z_model{0.2, -0.2, 0.2, -0.2};
+  std::vector<double> x_model{0.0, 0.0, 0.36, 0.36};
   std::string model_unit{"model_unit"};
 
   std::string mapping_kind{"mock_linear"};

@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
 """TTY-only single-key console for ROS 1; pure key decisions stay ROS-free."""
 
 from __future__ import print_function
 
+import errno
 import os
 import select
 import sys
@@ -172,7 +174,13 @@ def run_console():
         quitting = False
         last_busy_notice = 0.0
         while not quitting:
-            ready, _, _ = select.select([fd], [], [], 0.05)
+            try:
+                ready, _, _ = select.select([fd], [], [], 0.05)
+            except select.error as exc:
+                # Python 2 的 select 会被 SIGCHLD/SIGTERM 打断，EINTR 时重试。
+                if exc.args and exc.args[0] == errno.EINTR:
+                    continue
+                raise
             if not ready:
                 continue
             data = os.read(fd, 32)

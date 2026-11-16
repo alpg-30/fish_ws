@@ -52,7 +52,7 @@ MappingResult map_model_to_joint(const Array4d& displacement, const Config& conf
 WaveformSample evaluate_model_waveform(
   double phase_rad, double phase_rate_rad_s, const Config& config) {
   if (!std::isfinite(phase_rad) || !std::isfinite(phase_rate_rad_s) ||
-      config.x_model.size() != kMotorCount || config.z_model.size() != kMotorCount) {
+      config.x_model.size() != kMotorCount) {
     throw std::invalid_argument("invalid Fluent model input");
   }
   WaveformSample sample;
@@ -61,16 +61,9 @@ WaveformSample evaluate_model_waveform(
   for (std::size_t i = 0; i < kMotorCount; ++i) {
     const double psi = config.x_model[i] * config.body_coeff * 2.0 * kPi / 0.55;
     const double wave = std::sin(psi - phase_rad);
-    const double z = config.z_model[i];
-    double shape = 0.0;
-    if (z > 0.1) {
-      shape = (z - 0.1) / 0.5;
-    } else if (z < -0.1) {
-      shape = (-0.1 - z) / 0.5;
-    }
     sample.spatial_phase_rad[i] = psi;
     sample.wave_value[i] = wave;
-    sample.model_displacement[i] = shape * config.amplitude_model * wave;
+    sample.model_displacement[i] = config.amplitude_model * wave;
   }
   const auto mapping = map_model_to_joint(sample.model_displacement, config);
   sample.mapping_valid = mapping.valid;
@@ -108,8 +101,7 @@ PhaseSample fluent_phase_periodic(double time_s, double frequency_hz, double tf_
 }
 
 WaveformSample evaluate_delayed_waveform(double time_s, const Config& config) {
-  if (!std::isfinite(time_s) || config.x_model.size() != kMotorCount ||
-      config.z_model.size() != kMotorCount) {
+  if (!std::isfinite(time_s) || config.x_model.size() != kMotorCount) {
     throw std::invalid_argument("invalid delayed waveform input");
   }
   const auto master = fluent_phase(time_s, config.frequency_hz, config.tf_coeff);
@@ -121,19 +113,19 @@ WaveformSample evaluate_delayed_waveform(double time_s, const Config& config) {
     const double psi = config.x_model[i] * config.body_coeff * 2.0 * kPi / 0.55;
     // 空间相位差等价为时间延迟，使快慢段切换点落在该电机自己的极值处。
     const double delay_s = psi / (2.0 * kPi) * period;
+    sample.spatial_phase_rad[i] = psi;
+    // 启动阶段：后电机在自己的延迟到达前保持中点，之后才从相位 0 开始跟随，
+    // 从而形成“前电机先动、后电机滞后起动”的效果。
+    if (time_s < delay_s) {
+      sample.wave_value[i] = 0.0;
+      sample.model_displacement[i] = 0.0;
+      continue;
+    }
     const double local_phase =
       fluent_phase_periodic(time_s - delay_s, config.frequency_hz, config.tf_coeff).phase_rad;
     const double wave = std::sin(-local_phase);
-    const double z = config.z_model[i];
-    double shape = 0.0;
-    if (z > 0.1) {
-      shape = (z - 0.1) / 0.5;
-    } else if (z < -0.1) {
-      shape = (-0.1 - z) / 0.5;
-    }
-    sample.spatial_phase_rad[i] = psi;
     sample.wave_value[i] = wave;
-    sample.model_displacement[i] = shape * config.amplitude_model * wave;
+    sample.model_displacement[i] = config.amplitude_model * wave;
   }
   const auto mapping = map_model_to_joint(sample.model_displacement, config);
   sample.mapping_valid = mapping.valid;

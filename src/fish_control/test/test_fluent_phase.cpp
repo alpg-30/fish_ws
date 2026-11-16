@@ -49,27 +49,37 @@ void check_delayed_mode() {
   config.frequency_hz = 0.4;
   config.tf_coeff = 0.65;
   config.body_coeff = 0.5;
-  config.x_model = {0.0, 0.12, 0.24, 0.36};
-  config.z_model = {0.20, -0.20, 0.25, -0.25};
+  config.x_model = {0.0, 0.0, 0.36, 0.36};
 
   const double period = 1.0 / config.frequency_hz;
   const double t1 = period * config.tf_coeff / 2.0;
   const double t2 = period * (1.0 - config.tf_coeff / 2.0);
   const int samples_per_cycle = 8000;
   const double dt = period / samples_per_cycle;
+  double max_delay = 0.0;
+  for (std::size_t i = 0; i < fish_control::kMotorCount; ++i) {
+    const double psi = config.x_model[i] * config.body_coeff * 2.0 * kPi / 0.55;
+    max_delay = std::max(max_delay, psi / (2.0 * kPi) * period);
+  }
 
   for (std::size_t i = 0; i < fish_control::kMotorCount; ++i) {
     const double psi = config.x_model[i] * config.body_coeff * 2.0 * kPi / 0.55;
     const double delay = psi / (2.0 * kPi) * period;
+    if (delay > 0.0) {
+      const double held = fish_control::evaluate_waveform(delay * 0.5, config)
+        .model_displacement[i];
+      check(std::abs(held) < 1e-12,
+            "delayed motor must stay at zero before its delay");
+    }
     std::vector<double> values(2 * samples_per_cycle + 1);
     for (int step = 0; step <= 2 * samples_per_cycle; ++step) {
-      values[step] = fish_control::evaluate_waveform(step * dt, config)
+      values[step] = fish_control::evaluate_waveform(max_delay + step * dt, config)
         .model_displacement[i];
     }
     std::vector<double> extrema;
     for (int step = 1; step < 2 * samples_per_cycle; ++step) {
       if ((values[step] - values[step - 1]) * (values[step + 1] - values[step]) < 0.0) {
-        extrema.push_back(step * dt);
+        extrema.push_back(max_delay + step * dt);
       }
     }
     for (double base : {t1, t2}) {

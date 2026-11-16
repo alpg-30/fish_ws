@@ -19,8 +19,8 @@ gait:
   body_coeff: 0.5
 
 geometry:
-  x_model: [0.0, 0.12, 0.24, 0.36]
-  z_model: [0.20, -0.20, 0.25, -0.25]
+  # ID1/2 前电机同相位，ID3/4 后电机同相位；只保留前后两组安装位置。
+  x_model: [0.0, 0.0, 0.36, 0.36]
   model_unit: fluent_model_unit
 
 mapping:

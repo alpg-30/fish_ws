@@ -183,7 +183,6 @@ private:
     pnh.param<double>("gait/body_coeff", c.body_coeff, c.body_coeff);
 
     assign_vector(pnh, "geometry/x_model", c.x_model);
-    assign_vector(pnh, "geometry/z_model", c.z_model);
     pnh.param<std::string>("geometry/model_unit", c.model_unit, c.model_unit);
 
     pnh.param<std::string>("mapping/kind", c.mapping_kind, c.mapping_kind);
@@ -745,7 +744,6 @@ private:
     msg.fault_code = fault_code_;
     for (std::size_t i = 0; i < kMotorCount; ++i) {
       msg.x_model[i] = accepted_config_.x_model[i];
-      msg.z_model[i] = accepted_config_.z_model[i];
       msg.hold_position_rad[i] = hold_position_[i];
     }
     gait_pub_.publish(msg);
