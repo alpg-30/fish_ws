@@ -11,3 +11,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 test_plot/.build/
+# 本地生成的实验分析图与波形图，不纳入仓库
+plots/
+waveform_*.png
