@@ -57,7 +57,8 @@ roslaunch fish_bringup fish.launch
 
 ```bash
 roslaunch fish_bringup fish.launch \
-  controller_config:=$(rospack find fish_bringup)/config/hardware.yaml
+  controller_config:=$(rospack find fish_bringup)/config/hardware.yaml \
+  imu:=true
 ```
 
 实机后端面向 **DYNAMIXEL XW430-T200**（IP68、RS485、Protocol 2.0，位置控制模式），
@@ -87,7 +88,7 @@ rosrun fish_tools keyboard_console.py
 - `e`：软件急停；`q`/EOF/Ctrl+C：正常停止后退出键盘，controller 继续保持位置与扭矩。
 
 单终端实机脚本 `src/fish_bringup/scripts/run_real.sh` 会一次性拉起 roscore、controller、
-experiment_manager，在 roslaunch 启动前开始录包，并在前台运行键盘控制：
+experiment_manager 和 IMU（`imu:=true`），在 roslaunch 启动前开始录包，并在前台运行键盘控制：
 
 ```bash
 cd <fish_ws 工作区根目录>
@@ -96,7 +97,7 @@ cd <fish_ws 工作区根目录>
 
 - 录包：`bags/launch_<时间戳>/bag.bag`，包含 `/fish/flapping_command`（摆角指令）、
   `/fish/motor_telemetry`（真实位置反馈与实时电流）、`/fish/joint_states`、
-  `/fish/gait_state`、`/fish/experiment_state`、`/fish/diagnostics`。
+  `/fish/gait_state`、`/fish/experiment_state`、`/fish/diagnostics`、`/imu`（N100WP）。
 - 空格 start/stop，`e` 急停，`q` 退出；脚本退出时会先 `stop_hold` 再 `disarm` 卸载扭矩。
 - experiment_manager 仍会为每次实验单独生成 `bags/<run_id>/` 录包与审计记录。
 
@@ -150,7 +151,19 @@ rosservice call /fish/controller/set_gait \
 rosrun fish_tools bag_audit.py bags/<run_id>
 ```
 
-返回码 0 表示 metadata 可读、六个 topic 齐全、四电机均有有效角度/电流样本且 `stop_hold_confirmed`。
+返回码 0 表示 metadata 可读、六个必需 topic 齐全、四电机均有有效角度/电流样本且
+`stop_hold_confirmed`。实机录包还会额外报告 `/imu` 的 `imu_present`、`imu_sample_count`、
+`imu_first_stamp_ns`/`imu_last_stamp_ns` 与 `imu_time_span_s`；mock 会话没有 IMU 时不判失败。
+
+## 时间戳与对齐
+
+- `/fish/flapping_command.header.stamp`（相位）与 `/fish/motor_telemetry.header.stamp`（电流）
+  都是 ROS 时间；两条消息另有 `host_steady_time_ns`（单调时钟，用于检查控制周期抖动）。
+- `/imu.header.stamp` 由 IMU 驱动在发布时写入；`/imu` 与电机消息共用同一 ROS 时钟。
+- `rosbag record` 同时保存消息头时间戳与 bag 接收时间。后处理以 `header.stamp` 作为统一
+  时间轴，对相位、电流、IMU 做插值/对齐，即可做同步 plot；`host_steady_time_ns` 用于
+  分析控制侧时间抖动，不建议与 IMU 的 `header.stamp` 直接混用。
+- `experiment_manager` 的 bag 与 `run_real.sh` 的 launch bag 都已包含 `/imu`。
 
 ## 波形参数语义
 

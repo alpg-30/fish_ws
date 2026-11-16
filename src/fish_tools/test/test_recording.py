@@ -14,7 +14,7 @@ from fish_tools._compat import (
     popen_session_kwargs,
     wait_process,
 )
-from fish_tools.bag_audit import REQUIRED_TOPICS, session_close_valid
+from fish_tools.bag_audit import RECORD_TOPICS, session_close_valid
 from fish_tools.experiment_manager import (
     atomic_write_json,
     final_experiment_state,
@@ -34,7 +34,7 @@ class RecordingContractTest(unittest.TestCase):
     def test_recorder_argv_is_explicit_and_scoped(self):
         argv = make_recorder_argv("/tmp/run/bag.bag")
         self.assertEqual(argv[:4], ["rosbag", "record", "-O", "/tmp/run/bag.bag"])
-        self.assertEqual(set(argv[4:]), set(REQUIRED_TOPICS))
+        self.assertEqual(set(argv[4:]), set(RECORD_TOPICS))
         self.assertNotIn("--all", argv)
         self.assertNotIn("-a", argv)
 

@@ -1,6 +1,10 @@
 <launch>
   <arg name="controller_config" default="$(find fish_bringup)/config/mock.yaml"/>
   <arg name="bag_root" default="bags"/>
+  <!-- 实机由 run_real.sh 传 imu:=true；mock 默认不启动 IMU -->
+  <arg name="imu" default="false"/>
+  <arg name="imu_port" default="/dev/ttyTHS1"/>
+  <arg name="imu_baud" default="935000"/>
 
   <group ns="fish">
     <node pkg="fish_control" type="controller_node" name="controller" output="screen">
@@ -11,5 +15,12 @@
       <rosparam file="$(find fish_bringup)/config/recording.yaml" command="load"/>
       <param name="bag_root" value="$(arg bag_root)"/>
     </node>
+  </group>
+
+  <group if="$(arg imu)">
+    <include file="$(find fdilink_ahrs)/launch/ahrs_data.launch">
+      <arg name="port" value="$(arg imu_port)"/>
+      <arg name="baud" value="$(arg imu_baud)"/>
+    </include>
   </group>
 </launch>

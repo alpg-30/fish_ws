@@ -16,6 +16,9 @@ REQUIRED_TOPICS = {
     "/fish/experiment_state": "fish_interfaces/ExperimentState",
     "/fish/diagnostics": "diagnostic_msgs/DiagnosticArray",
 }
+# /imu 只在实机启动 IMU 时存在；记录它，但不作为所有会话（含 mock）的必需 topic。
+RECORD_TOPICS = dict(REQUIRED_TOPICS)
+RECORD_TOPICS["/imu"] = "sensor_msgs/Imu"
 TOPIC_TRANSPORT = {
     "/fish/flapping_command": "stream",
     "/fish/motor_telemetry": "stream",
@@ -44,6 +47,11 @@ def empty_validation():
         "command_sequence_gap_count": 0,
         "telemetry_sequence_gap_count": 0,
         "sequence_statistics": {},
+        "imu_present": False,
+        "imu_sample_count": 0,
+        "imu_first_stamp_ns": 0,
+        "imu_last_stamp_ns": 0,
+        "imu_time_span_s": 0.0,
         "failures": [],
     }
 
@@ -200,8 +208,9 @@ def _read_bag(bag_path, session, validation):
         recorded_types = {
             name: entry.msg_type for name, entry in info.topics.items()
         }
-        counts = {name: 0 for name in REQUIRED_TOPICS}
+        counts = {name: 0 for name in RECORD_TOPICS}
         telemetry_records = []
+        imu_stamps = []
         sequences = {
             "/fish/flapping_command": [],
             "/fish/motor_telemetry": [],
@@ -214,7 +223,7 @@ def _read_bag(bag_path, session, validation):
         }
         observed_revisions = {name: set() for name in observed_backends}
         malformed_telemetry = False
-        for topic, message, _stamp in bag.read_messages(topics=list(REQUIRED_TOPICS)):
+        for topic, message, _stamp in bag.read_messages(topics=list(RECORD_TOPICS)):
             counts[topic] = counts.get(topic, 0) + 1
             if topic == "/fish/motor_telemetry":
                 record = {
@@ -238,6 +247,13 @@ def _read_bag(bag_path, session, validation):
                 observed_revisions[topic].add(int(message.active_config_revision))
             elif topic == "/fish/experiment_state":
                 experiment_messages.append(message)
+            elif topic == "/imu":
+                try:
+                    stamp_ns = int(message.header.stamp.to_nsec())
+                except Exception:
+                    stamp_ns = 0
+                if stamp_ns > 0:
+                    imu_stamps.append(stamp_ns)
     except Exception as exc:
         _add_failure(validation, "rosbag message audit failed: {0}".format(exc))
         return {}, {}
@@ -251,6 +267,14 @@ def _read_bag(bag_path, session, validation):
         recorded_types.get(name) == type_name
         for name, type_name in REQUIRED_TOPICS.items()
     )
+    validation["imu_present"] = counts.get("/imu", 0) > 0
+    validation["imu_sample_count"] = counts.get("/imu", 0)
+    if imu_stamps:
+        first_stamp = min(imu_stamps)
+        last_stamp = max(imu_stamps)
+        validation["imu_first_stamp_ns"] = first_stamp
+        validation["imu_last_stamp_ns"] = last_stamp
+        validation["imu_time_span_s"] = (last_stamp - first_stamp) * 1e-9
     if malformed_telemetry:
         _add_failure(validation, "telemetry arrays must have four entries")
     validation.update(count_valid_motor_samples(telemetry_records))

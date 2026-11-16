@@ -20,7 +20,7 @@ from ._compat import (
     queue,
     wait_process,
 )
-from .bag_audit import REQUIRED_TOPICS, required_topic_entries
+from .bag_audit import RECORD_TOPICS, REQUIRED_TOPICS, required_topic_entries
 
 
 STATES = {"IDLE", "STARTING", "RUNNING", "STOPPING", "HOLDING", "ERROR"}
@@ -62,7 +62,7 @@ def make_run_id(now=None):
 def make_recorder_argv(bag_path):
     return (
         ["rosbag", "record", "-O", str(bag_path)] +
-        list(REQUIRED_TOPICS.keys())
+        list(RECORD_TOPICS.keys())
     )
 
 

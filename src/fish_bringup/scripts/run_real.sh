@@ -11,6 +11,7 @@
 #        /fish/gait_state        当前配置
 #        /fish/experiment_state  实验状态
 #        /fish/diagnostics       诊断
+#        /imu                    IMU（N100WP，100 Hz，带 header.stamp）
 #   4. 前台 keyboard_console：空格 start/stop，e 急停，q 退出
 #
 # 用法：
@@ -123,6 +124,7 @@ rosbag record -O "$BAG" \
   /fish/gait_state \
   /fish/experiment_state \
   /fish/diagnostics \
+  /imu \
   >"$RUN_DIR/rosbag.log" 2>&1 &
 BAG_PID=$!
 sleep 0.5
@@ -135,6 +137,7 @@ echo "[run_real] 启动 controller + experiment_manager ..."
 roslaunch fish_bringup fish.launch \
   controller_config:="$CONFIG" \
   bag_root:="$BAG_ROOT" \
+  imu:=true \
   >"$RUN_DIR/roslaunch.log" 2>&1 &
 LAUNCH_PID=$!
 

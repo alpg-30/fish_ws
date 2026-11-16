@@ -2,6 +2,7 @@ import unittest
 
 from fish_tools._compat import TemporaryDirectory
 from fish_tools.bag_audit import (
+    RECORD_TOPICS,
     REQUIRED_TOPICS,
     audit_run,
     count_valid_motor_samples,
@@ -22,6 +23,10 @@ class TopicContractTest(unittest.TestCase):
         self.assertEqual(REQUIRED_TOPICS["/fish/experiment_state"],
                          "fish_interfaces/ExperimentState")
         self.assertNotIn("/parameter_events", REQUIRED_TOPICS)
+
+    def test_recorded_topics_add_optional_imu(self):
+        self.assertEqual(RECORD_TOPICS["/imu"], "sensor_msgs/Imu")
+        self.assertEqual(len(RECORD_TOPICS), len(REQUIRED_TOPICS) + 1)
 
     def test_session_and_recorded_topic_contract(self):
         entries = required_topic_entries()
