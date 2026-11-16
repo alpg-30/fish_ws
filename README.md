@@ -14,6 +14,8 @@ DynamixelSDK 的 C++ 子集。
 | `fish_control` | Fluent 非对称相位、参数整定、安全状态机、mock/实机总线、controller 节点 |
 | `fish_tools` | `experiment_manager.py`（先录后动/停稳保持后关包）、`keyboard_console.py`（空格）、`bag_audit.py` |
 | `fish_bringup` | launch 与 mock/hardware/录包配置 |
+| `fdilink_ahrs` | N100WP（FDILink AHRS）IMU 串口驱动，发布 `/imu`、`/mag_pose_2d`、`/euler_angles`、`/magnetic` 等 |
+| `serial` | `fdilink_ahrs` 依赖的串口库，已内置 MIT 源码（无需 `ros-melodic-serial`） |
 
 ## 构建与测试
 
@@ -104,6 +106,23 @@ cd <fish_ws 工作区根目录>
 rosservice call /fish/controller/set_gait \
   "{amplitude_model: 0.08, frequency_hz: 1.0, tf_coeff: 0.65, body_coeff: 0.5}"
 ```
+
+## IMU（N100WP / FDILink AHRS）
+
+`src/fdilink_ahrs` 为厂家 ROS1 SDK（帧头 `0xfc`、帧尾 `0xfd`，默认 921600），
+`src/serial` 为其内置的 MIT 串口库，构建时无需系统 `ros-melodic-serial`。
+
+- 稳定设备名：`wheeltec_udev.sh` 的 CH340 规则会把 `1a86:7523` 绑定为 `/dev/fdilink_ahrs`
+  （当前 HL-340 适配器即此型号，安装规则需要 `sudo`）。
+- 未安装 udev 规则时可直接指定端口：
+
+  ```bash
+  roslaunch fdilink_ahrs ahrs_data.launch port:=/dev/ttyUSB1 baud:=921600
+  ```
+
+- 发布：`/imu`（frame `gyro_link`）、`/mag_pose_2d`、`/euler_angles`、`/magnetic`、
+  `/gps/fix`、`/system_speed`、`/NED_odometry`；`device_type:=1` 为单体 IMU 坐标系。
+- 可选静态 TF：`roslaunch fdilink_ahrs tf.launch`。
 
 ## 录包审计
 
