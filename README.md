@@ -109,20 +109,38 @@ rosservice call /fish/controller/set_gait \
 
 ## IMU（N100WP / FDILink AHRS）
 
-`src/fdilink_ahrs` 为厂家 ROS1 SDK（帧头 `0xfc`、帧尾 `0xfd`，默认 921600），
+`src/fdilink_ahrs` 为厂家 ROS1 SDK（帧头 `0xfc`、帧尾 `0xfd`），
 `src/serial` 为其内置的 MIT 串口库，构建时无需系统 `ros-melodic-serial`。
 
-- 稳定设备名：`wheeltec_udev.sh` 的 CH340 规则会把 `1a86:7523` 绑定为 `/dev/fdilink_ahrs`
-  （当前 HL-340 适配器即此型号，安装规则需要 `sudo`）。
-- 未安装 udev 规则时可直接指定端口：
+实机默认接 Jetson Nano 40 pin UART1：
+
+| IMU | Jetson 40 pin |
+|---|---|
+| 5V | Pin 2 或 Pin 4 |
+| GND | Pin 6 |
+| TX（灰色） | Pin 10（UART1_RXD） |
+| RX（黄色） | Pin 8（UART1_TXD，可不接） |
+
+- **实测波特率为 935000**：标称 921600 在该模块上有约 1.5% 偏差，会导致帧头能同步但整帧
+  CRC16 失败。实测 928k–941k 均可通过 CRC16，默认取中值 935000。
+- `ttyTHS1` 默认属于 `root:tty`，需要一次性 udev 规则：
 
   ```bash
-  roslaunch fdilink_ahrs ahrs_data.launch port:=/dev/ttyUSB1 baud:=921600
+  echo 'KERNEL=="ttyTHS1", GROUP="dialout", MODE="0660"' | sudo tee /etc/udev/rules.d/99-fish-ths1.rules
+  sudo udevadm control --reload-rules && sudo udevadm trigger
   ```
 
-- 发布：`/imu`（frame `gyro_link`）、`/mag_pose_2d`、`/euler_angles`、`/magnetic`、
+- 启动（默认值已为 `/dev/ttyTHS1` + `935000`）：
+
+  ```bash
+  roslaunch fdilink_ahrs ahrs_data.launch
+  ```
+
+- 发布：`/imu`（100 Hz，frame `gyro_link`）、`/mag_pose_2d`、`/euler_angles`、`/magnetic`、
   `/gps/fix`、`/system_speed`、`/NED_odometry`；`device_type:=1` 为单体 IMU 坐标系。
 - 可选静态 TF：`roslaunch fdilink_ahrs tf.launch`。
+- HL-340/CH340 在 935 kbps 下时钟误差过大，不适用于该链路；请使用 Jetson UART 或
+  厂家 CP2102/CH9102 等带晶振的适配器。
 
 ## 录包审计
 

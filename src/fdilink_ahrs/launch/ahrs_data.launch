@@ -1,7 +1,8 @@
 <launch>
-  <!-- 默认使用 wheeltec_udev.sh 建立的稳定设备名；可 roslaunch 时覆盖 port:=/dev/ttyUSB1 -->
-  <arg name="port" default="/dev/fdilink_ahrs"/>
-  <arg name="baud" default="921600"/>
+  <!-- fish_ws 实机默认走 Jetson 40 pin UART1：TX→Pin 10、GND→Pin 6、5V→Pin 2/4。
+       N100WP 实测波特率为 935000（标称 921600 存在约 1.5% 偏差）；USB 适配器可覆盖 port/baud。 -->
+  <arg name="port" default="/dev/ttyTHS1"/>
+  <arg name="baud" default="935000"/>
 
   <node pkg="fdilink_ahrs" name="ahrs_driver" type="ahrs_driver" output="screen" >
     <!-- 是否输出debug信息 -->

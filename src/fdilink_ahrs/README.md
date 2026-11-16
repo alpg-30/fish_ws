@@ -1,6 +1,10 @@
 
 ## fdilink的imu驱动包
 Deta-10-ros-v0.0.1
+
+> fish_ws 实机说明：N100WP 在 Jetson 40 pin UART1（`/dev/ttyTHS1`）上实测波特率为 **935000**，
+> 不是 SDK 标称的 921600；`launch/ahrs_data.launch` 默认值已按实测配置。
+> 依赖的 `serial` 已内置在 `src/serial`，无需 `ros-melodic-serial`。详见仓库根目录 README。
 ### 依赖：
 ```bash
 sudo apt install ros-melodic-serial
